@@ -9,6 +9,12 @@ use codex_login::ExternalAuth;
 use codex_login::ExternalAuthRefreshContext;
 use codex_login::ExternalAuthTokens;
 use codex_login::TokenData;
+use codex_login::auth::AgentIdentityAuth;
+use codex_login::auth::AgentIdentityAuthRecord;
+use codex_model_provider_info::WireApi;
+use codex_protocol::account::PlanType;
+use codex_protocol::config_types::ModelProviderAuthInfo;
+use codex_protocol::openai_models::ModelAvailabilityNux;
 use codex_protocol::openai_models::ModelsResponse;
 use pretty_assertions::assert_eq;
 use serde_json::json;
@@ -308,6 +314,31 @@ async fn get_model_info_matches_hyphenated_provider_namespace_suffix() {
     let model_info = manager.get_model_info(&namespaced_model, &config).await;
 
     assert_eq!(model_info.slug, namespaced_model);
+    assert!(!model_info.used_fallback_model_metadata);
+}
+
+#[tokio::test]
+async fn get_model_info_matches_openai_prefix_alias() {
+    let config = ModelsManagerConfig::default();
+    let mut remote = remote_model("gpt-5.4", "gpt-5.4", /*priority*/ 0);
+    remote.availability_nux = Some(ModelAvailabilityNux {
+        message: "gpt-5.4 is available".to_string(),
+    });
+    let manager = static_manager_for_tests(ModelsResponse {
+        models: vec![remote],
+    });
+    let aliased_model = "openai-gpt-5.4".to_string();
+
+    let model_info = manager.get_model_info(&aliased_model, &config).await;
+
+    assert_eq!(model_info.slug, aliased_model);
+    assert_eq!(model_info.display_name, "gpt-5.4");
+    assert_eq!(
+        model_info.availability_nux,
+        Some(ModelAvailabilityNux {
+            message: "gpt-5.4 is available".to_string(),
+        })
+    );
     assert!(!model_info.used_fallback_model_metadata);
 }
 
