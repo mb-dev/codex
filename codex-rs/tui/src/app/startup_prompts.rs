@@ -122,7 +122,7 @@ pub(super) fn should_show_model_migration_prompt(
     seen_migrations: &BTreeMap<String, String>,
     available_models: &[ModelPreset],
 ) -> bool {
-    if target_model == current_model {
+    if crate::model_alias::same_picker_model(target_model, current_model) {
         return false;
     }
 
@@ -132,17 +132,17 @@ pub(super) fn should_show_model_migration_prompt(
         return false;
     }
 
-    if !available_models
-        .iter()
-        .any(|preset| preset.model == target_model && preset.show_in_picker)
-    {
+    if !available_models.iter().any(|preset| {
+        crate::model_alias::same_picker_model(target_model, preset.model.as_str())
+            && preset.show_in_picker
+    }) {
         return false;
     }
 
-    if available_models
-        .iter()
-        .any(|preset| preset.model == current_model && preset.upgrade.is_some())
-    {
+    if available_models.iter().any(|preset| {
+        crate::model_alias::same_picker_model(current_model, preset.model.as_str())
+            && preset.upgrade.is_some()
+    }) {
         return true;
     }
 
@@ -173,9 +173,10 @@ pub(super) fn target_preset_for_upgrade<'a>(
     available_models: &'a [ModelPreset],
     target_model: &str,
 ) -> Option<&'a ModelPreset> {
-    available_models
-        .iter()
-        .find(|preset| preset.model == target_model && preset.show_in_picker)
+    available_models.iter().find(|preset| {
+        crate::model_alias::same_picker_model(target_model, preset.model.as_str())
+            && preset.show_in_picker
+    })
 }
 
 pub(super) fn apply_accepted_model_migration(
@@ -274,9 +275,7 @@ pub(super) async fn handle_model_migration_prompt_if_needed(
     app_event_tx: &AppEventSender,
     available_models: &[ModelPreset],
 ) -> Option<AppExitInfo> {
-    let upgrade = available_models
-        .iter()
-        .find(|preset| preset.model == model)
+    let upgrade = crate::model_alias::find_matching_picker_preset(available_models, model)
         .and_then(|preset| preset.upgrade.as_ref());
 
     if let Some(ModelUpgrade {
@@ -301,11 +300,11 @@ pub(super) async fn handle_model_migration_prompt_if_needed(
             return None;
         }
 
-        let current_preset = available_models.iter().find(|preset| preset.model == model);
+        let current_preset = crate::model_alias::find_matching_picker_preset(available_models, model);
         let target_preset = target_preset_for_upgrade(available_models, &target_model);
         let target_preset = target_preset?;
         let target_display_name = target_preset.display_name.clone();
-        let heading_label = if target_display_name == model {
+        let heading_label = if target_display_name == crate::model_alias::canonical_picker_model(model) {
             target_model.clone()
         } else {
             target_display_name.clone()

@@ -52,12 +52,27 @@ async fn model_migration_prompt_only_shows_for_deprecated_models() {
         &seen,
         &all_model_presets()
     ));
+    assert!(should_show_model_migration_prompt(
+        "openai-gpt-5.3-codex",
+        "gpt-5.4",
+        &seen,
+        &all_model_presets()
+    ));
     assert!(!should_show_model_migration_prompt(
         "gpt-5.3-codex",
         "gpt-5.3-codex",
         &seen,
         &all_model_presets()
     ));
+}
+
+#[test]
+fn target_preset_for_upgrade_matches_openai_prefixed_aliases() {
+    assert_eq!(
+        target_preset_for_upgrade(&all_model_presets(), "openai-gpt-5.4")
+            .map(|preset| preset.model.as_str()),
+        Some("gpt-5.4")
+    );
 }
 
 #[test]

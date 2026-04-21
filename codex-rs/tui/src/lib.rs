@@ -154,6 +154,7 @@ mod markdown;
 mod markdown_render;
 mod markdown_stream;
 mod mention_codec;
+mod model_alias;
 mod model_catalog;
 mod model_migration;
 mod motion;
