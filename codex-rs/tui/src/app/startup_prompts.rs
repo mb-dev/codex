@@ -300,15 +300,17 @@ pub(super) async fn handle_model_migration_prompt_if_needed(
             return None;
         }
 
-        let current_preset = crate::model_alias::find_matching_picker_preset(available_models, model);
+        let current_preset =
+            crate::model_alias::find_matching_picker_preset(available_models, model);
         let target_preset = target_preset_for_upgrade(available_models, &target_model);
         let target_preset = target_preset?;
         let target_display_name = target_preset.display_name.clone();
-        let heading_label = if target_display_name == crate::model_alias::canonical_picker_model(model) {
-            target_model.clone()
-        } else {
-            target_display_name.clone()
-        };
+        let heading_label =
+            if target_display_name == crate::model_alias::canonical_picker_model(model) {
+                target_model.clone()
+            } else {
+                target_display_name.clone()
+            };
         let target_description =
             (!target_preset.description.is_empty()).then(|| target_preset.description.clone());
         let can_opt_out = current_preset.is_some();
