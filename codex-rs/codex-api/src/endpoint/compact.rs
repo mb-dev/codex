@@ -76,13 +76,13 @@ struct CompactHistoryResponse {
 fn parse_compact_history_response(body: &[u8]) -> Result<Vec<ResponseItem>, ApiError> {
     let mut parsed: Value =
         serde_json::from_slice(body).map_err(|e| ApiError::Stream(e.to_string()))?;
-    sanitize_compact_output_message_phases(&mut parsed);
+    sanitize_compact_output_messages(&mut parsed);
     let parsed: CompactHistoryResponse =
         serde_json::from_value(parsed).map_err(|e| ApiError::Stream(e.to_string()))?;
     Ok(parsed.output)
 }
 
-fn sanitize_compact_output_message_phases(payload: &mut Value) {
+fn sanitize_compact_output_messages(payload: &mut Value) {
     let Some(output) = payload.get_mut("output").and_then(Value::as_array_mut) else {
         return;
     };
@@ -94,11 +94,47 @@ fn sanitize_compact_output_message_phases(payload: &mut Value) {
         }
 
         let Some(phase) = item.get_mut("phase") else {
+            sanitize_compact_output_message_content_items(item);
             continue;
         };
         if phase.as_str().is_some_and(|value| value.trim().is_empty()) {
             *phase = Value::Null;
         }
+        sanitize_compact_output_message_content_items(item);
+    }
+}
+
+fn sanitize_compact_output_message_content_items(message: &mut Value) {
+    let Some(content) = message.get_mut("content").and_then(Value::as_array_mut) else {
+        return;
+    };
+
+    content.retain(|content_item| {
+        let is_input_image =
+            content_item.get("type").and_then(Value::as_str) == Some("input_image");
+        if !is_input_image {
+            return true;
+        }
+
+        content_item
+            .get("image_url")
+            .and_then(Value::as_str)
+            .is_some_and(|image_url| !image_url.trim().is_empty())
+    });
+}
+
+#[cfg(test)]
+fn extract_message_content(items: &[ResponseItem]) -> &[codex_protocol::models::ContentItem] {
+    let [ResponseItem::Message { content, .. }] = items else {
+        panic!("expected exactly one message item");
+    };
+    content
+}
+
+#[cfg(test)]
+fn output_text(text: &str) -> codex_protocol::models::ContentItem {
+    codex_protocol::models::ContentItem::OutputText {
+        text: text.to_string(),
     }
 }
 
@@ -152,6 +188,44 @@ mod tests {
                 ..
             }] if role == "assistant"
         ));
+    }
+
+    #[test]
+    fn compact_response_filters_input_images_without_image_url() {
+        let parsed = parse_compact_history_response(
+            br#"{
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "hi"},
+                        {"type": "input_image", "detail": "high"}
+                    ]
+                }]
+            }"#,
+        )
+        .expect("compact response should parse");
+
+        assert_eq!(extract_message_content(&parsed), [output_text("hi")]);
+    }
+
+    #[test]
+    fn compact_response_filters_input_images_with_empty_image_url() {
+        let parsed = parse_compact_history_response(
+            br#"{
+                "output": [{
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "hi"},
+                        {"type": "input_image", "image_url": "   ", "detail": "high"}
+                    ]
+                }]
+            }"#,
+        )
+        .expect("compact response should parse");
+
+        assert_eq!(extract_message_content(&parsed), [output_text("hi")]);
     }
 
     #[test]
