@@ -242,6 +242,8 @@ mod tests {
         )
         .expect_err("unknown non-empty phase should still fail");
 
-        assert!(matches!(err, ApiError::Stream(message) if message.contains("unknown variant `background`")));
+        assert!(
+            matches!(err, ApiError::Stream(message) if message.contains("unknown variant `background`"))
+        );
     }
 }
