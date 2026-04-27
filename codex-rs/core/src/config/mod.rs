@@ -790,6 +790,10 @@ pub struct Config {
     /// Definition for MCP servers that Codex can reach out to for tool calls.
     pub mcp_servers: Constrained<HashMap<String, McpServerConfig>>,
 
+    /// Optional per-profile whitelist of MCP server names. When `Some`, plugin-contributed
+    /// servers are also filtered to this set. `None` preserves the global behavior.
+    pub enabled_mcp_servers: Option<Vec<String>>,
+
     /// Preferred store for MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
     ///          Credentials stored in the keyring will only be readable by Codex unless the user explicitly grants access via OS-level keyring access.
@@ -1406,6 +1410,12 @@ impl Config {
             // above.
             filter_mcp_servers_by_requirements(&mut configured_mcp_servers, Some(mcp_requirements));
         }
+        if let Some(whitelist) = self.enabled_mcp_servers.as_ref() {
+            let allowed: std::collections::HashSet<&str> =
+                whitelist.iter().map(String::as_str).collect();
+            configured_mcp_servers.retain(|name, _| allowed.contains(name.as_str()));
+        }
+
         plugin_ids_by_mcp_server_name
             .retain(|server_name, _| configured_mcp_servers.contains_key(server_name));
 
@@ -3372,7 +3382,15 @@ impl Config {
             &mut startup_warnings,
         )?;
 
-        let mcp_servers = constrain_mcp_servers(cfg.mcp_servers.clone(), mcp_servers.as_ref())
+        let mut filtered_cfg_mcp_servers = cfg.mcp_servers.clone();
+        if let Some(whitelist) = config_profile.enabled_mcp_servers.as_ref() {
+            let allowed: std::collections::HashSet<&str> =
+                whitelist.iter().map(String::as_str).collect();
+            filtered_cfg_mcp_servers.retain(|name, _| allowed.contains(name.as_str()));
+        }
+        let profile_mcp_server_whitelist = config_profile.enabled_mcp_servers.clone();
+
+        let mcp_servers = constrain_mcp_servers(filtered_cfg_mcp_servers, mcp_servers.as_ref())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{e}")))?;
 
         let network_permission_profile = constrained_permission_profile.get().clone();
@@ -3471,6 +3489,7 @@ impl Config {
                 env!("CARGO_PKG_VERSION"),
             ),
             mcp_servers,
+            enabled_mcp_servers: profile_mcp_server_whitelist,
             // The config.toml omits "_mode" because it's a config file. However, "_mode"
             // is important in code to differentiate the mode from the store implementation.
             mcp_oauth_credentials_store_mode: resolve_mcp_oauth_credentials_store_mode(
