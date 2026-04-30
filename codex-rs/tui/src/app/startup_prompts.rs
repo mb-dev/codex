@@ -186,19 +186,21 @@ pub(super) fn apply_accepted_model_migration(
     target_model: String,
     target_default_effort: ReasoningEffortConfig,
 ) {
+    let persisted_target =
+        crate::model_alias::persisted_picker_model(&target_model, config.model_provider.is_openai());
     app_event_tx.send(AppEvent::PersistModelMigrationPromptAcknowledged {
         from_model,
-        to_model: target_model.clone(),
+        to_model: persisted_target.clone(),
     });
 
-    config.model = Some(target_model.clone());
+    config.model = Some(persisted_target.clone());
     config.model_reasoning_effort = Some(target_default_effort.clone());
-    app_event_tx.send(AppEvent::UpdateModel(target_model.clone()));
+    app_event_tx.send(AppEvent::UpdateModel(persisted_target.clone()));
     app_event_tx.send(AppEvent::UpdateReasoningEffort(Some(
         target_default_effort.clone(),
     )));
     app_event_tx.send(AppEvent::PersistModelSelection {
-        model: target_model,
+        model: persisted_target,
         effort: Some(target_default_effort),
     });
 }
