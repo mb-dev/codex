@@ -3383,12 +3383,12 @@ impl Config {
         )?;
 
         let mut filtered_cfg_mcp_servers = cfg.mcp_servers.clone();
-        if let Some(whitelist) = config_profile.enabled_mcp_servers.as_ref() {
+        if let Some(whitelist) = cfg.enabled_mcp_servers.as_ref() {
             let allowed: std::collections::HashSet<&str> =
                 whitelist.iter().map(String::as_str).collect();
             filtered_cfg_mcp_servers.retain(|name, _| allowed.contains(name.as_str()));
         }
-        let profile_mcp_server_whitelist = config_profile.enabled_mcp_servers.clone();
+        let profile_mcp_server_whitelist = cfg.enabled_mcp_servers.clone();
 
         let mcp_servers = constrain_mcp_servers(filtered_cfg_mcp_servers, mcp_servers.as_ref())
             .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidInput, format!("{e}")))?;

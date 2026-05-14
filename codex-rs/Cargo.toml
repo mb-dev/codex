@@ -515,10 +515,6 @@ debug = "full"
 lto = false
 strip = false
 
-[profile.dev]
-debug = 1         # Avoid full debug info for huge local macOS binaries.
-
-
 [profile.ci-test]
 # Reduce binary size to reduce disk pressure.
 debug = "limited"

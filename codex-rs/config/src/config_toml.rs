@@ -249,6 +249,16 @@ pub struct ConfigToml {
     #[schemars(schema_with = "crate::schema::mcp_servers_schema")]
     pub mcp_servers: HashMap<String, McpServerConfig>,
 
+    /// Optional whitelist of MCP server names to expose.
+    ///
+    /// - `None` (omitted): keep the full `mcp_servers` set.
+    /// - `Some(vec![])`: disable all MCP servers.
+    /// - `Some(["foo", "bar"])`: only expose the named servers from the global config.
+    ///
+    /// Primarily useful in profile files (`<name>.config.toml`) to restrict which
+    /// servers are active when a particular profile is selected.
+    pub enabled_mcp_servers: Option<Vec<String>>,
+
     /// Preferred backend for storing MCP OAuth credentials.
     /// keyring: Use an OS-specific keyring service.
     ///          https://github.com/openai/codex/blob/main/codex-rs/rmcp-client/src/oauth.rs#L2
