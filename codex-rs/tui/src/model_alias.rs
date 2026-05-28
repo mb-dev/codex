@@ -55,6 +55,8 @@ mod tests {
             }],
             supports_personality: false,
             additional_speed_tiers: Vec::new(),
+            service_tiers: Vec::new(),
+            default_service_tier: None,
             is_default: false,
             upgrade: None,
             show_in_picker: true,

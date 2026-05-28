@@ -106,6 +106,7 @@ impl ChatWidget {
                     model.clone(),
                     Some(preset.default_reasoning_effort.clone()),
                     should_prompt_plan_mode_scope,
+                    self.config.model_provider.is_openai(),
                 );
                 SelectionItem {
                     name: model.clone(),
@@ -217,6 +218,7 @@ impl ChatWidget {
         model_for_action: String,
         effort_for_action: Option<ReasoningEffortConfig>,
         should_prompt_plan_mode_scope: bool,
+        is_openai_provider: bool,
     ) -> Vec<SelectionAction> {
         vec![Box::new(move |tx| {
             if should_prompt_plan_mode_scope {
@@ -230,8 +232,11 @@ impl ChatWidget {
             tx.send(AppEvent::UpdateModel(model_for_action.clone()));
             tx.send(AppEvent::UpdateReasoningEffort(effort_for_action.clone()));
             tx.send(AppEvent::PersistModelSelection {
-                model: model_for_action.clone(),
-                effort: effort_for_action.clone(),
+                model: crate::model_alias::persisted_picker_model(
+                    &model_for_action,
+                    is_openai_provider,
+                ),
+                effort: effort_for_action,
             });
         })]
     }
@@ -309,14 +314,15 @@ impl ChatWidget {
                 tx.send(AppEvent::PersistPlanModeReasoningEffort(effort.clone()));
             }
         })];
+        let is_openai = self.config.model_provider.is_openai();
         let all_modes_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
             tx.send(AppEvent::UpdateModel(model.clone()));
             tx.send(AppEvent::UpdateReasoningEffort(effort.clone()));
             tx.send(AppEvent::UpdatePlanModeReasoningEffort(effort.clone()));
             tx.send(AppEvent::PersistPlanModeReasoningEffort(effort.clone()));
             tx.send(AppEvent::PersistModelSelection {
-                model: model.clone(),
-                effort: effort.clone(),
+                model: crate::model_alias::persisted_picker_model(&model, is_openai),
+                effort,
             });
         })];
 
@@ -451,11 +457,10 @@ impl ChatWidget {
             };
 
             let model_for_action = model_slug.clone();
-            let choice_effort = Some(effort);
-            let should_prompt_plan_mode_scope = self.should_prompt_plan_mode_reasoning_scope(
-                model_slug.as_str(),
-                choice_effort.clone(),
-            );
+            let choice_effort = choice.stored;
+            let should_prompt_plan_mode_scope =
+                self.should_prompt_plan_mode_reasoning_scope(model_slug.as_str(), choice_effort);
+            let is_openai = self.config.model_provider.is_openai();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                 if should_prompt_plan_mode_scope {
                     tx.send(AppEvent::OpenPlanReasoningScopePrompt {
@@ -466,8 +471,11 @@ impl ChatWidget {
                     tx.send(AppEvent::UpdateModel(model_for_action.clone()));
                     tx.send(AppEvent::UpdateReasoningEffort(choice_effort.clone()));
                     tx.send(AppEvent::PersistModelSelection {
-                        model: model_for_action.clone(),
-                        effort: choice_effort.clone(),
+                        model: crate::model_alias::persisted_picker_model(
+                            &model_for_action,
+                            is_openai,
+                        ),
+                        effort: choice_effort,
                     });
                 }
             })];
@@ -527,8 +535,14 @@ impl ChatWidget {
     }
 
     fn apply_model_and_effort(&self, model: String, effort: Option<ReasoningEffortConfig>) {
-        self.apply_model_and_effort_without_persist(model.clone(), effort.clone());
-        self.app_event_tx
-            .send(AppEvent::PersistModelSelection { model, effort });
+        self.apply_model_and_effort_without_persist(model.clone(), effort);
+        let persisted = crate::model_alias::persisted_picker_model(
+            &model,
+            self.config.model_provider.is_openai(),
+        );
+        self.app_event_tx.send(AppEvent::PersistModelSelection {
+            model: persisted,
+            effort,
+        });
     }
 }
