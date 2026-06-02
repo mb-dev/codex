@@ -78,7 +78,7 @@ impl ChatWidget {
         let current_model = self.current_model();
         let current_label = presets
             .iter()
-            .find(|preset| preset.model.as_str() == current_model)
+            .find(|preset| crate::model_alias::same_picker_model(preset.model.as_str(), current_model))
             .map(|preset| preset.model.to_string())
             .unwrap_or_else(|| self.model_display_name().to_string());
 
@@ -106,12 +106,15 @@ impl ChatWidget {
                     model.clone(),
                     Some(preset.default_reasoning_effort.clone()),
                     should_prompt_plan_mode_scope,
-                    self.config.model_provider.is_openai(),
+                    self.should_prefix_openai_alias(),
                 );
                 SelectionItem {
                     name: model.clone(),
                     description,
-                    is_current: model.as_str() == current_model,
+                    is_current: crate::model_alias::same_picker_model(
+                        model.as_str(),
+                        current_model,
+                    ),
                     is_default: preset.is_default,
                     actions,
                     dismiss_on_select: true,
@@ -181,7 +184,8 @@ impl ChatWidget {
         for preset in presets.into_iter() {
             let description =
                 (!preset.description.is_empty()).then_some(preset.description.to_string());
-            let is_current = preset.model.as_str() == self.current_model();
+            let is_current =
+                crate::model_alias::same_picker_model(preset.model.as_str(), self.current_model());
             let single_supported_effort = preset.supported_reasoning_efforts.len() == 1;
             let preset_for_action = preset.clone();
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
@@ -218,8 +222,15 @@ impl ChatWidget {
         model_for_action: String,
         effort_for_action: Option<ReasoningEffortConfig>,
         should_prompt_plan_mode_scope: bool,
-        is_openai_provider: bool,
+        prefix_openai_alias: bool,
     ) -> Vec<SelectionAction> {
+        // Normalize to the persisted (provider-aliased) form up front so the live
+        // session model matches what we write to config — otherwise in-session
+        // requests would use the stripped slug and a provider like snowhouse that
+        // routes on `openai-` would reject it. `persisted_picker_model` is
+        // idempotent, so forwarding this downstream is safe.
+        let model_for_action =
+            crate::model_alias::persisted_picker_model(&model_for_action, prefix_openai_alias);
         vec![Box::new(move |tx| {
             if should_prompt_plan_mode_scope {
                 tx.send(AppEvent::OpenPlanReasoningScopePrompt {
@@ -232,11 +243,8 @@ impl ChatWidget {
             tx.send(AppEvent::UpdateModel(model_for_action.clone()));
             tx.send(AppEvent::UpdateReasoningEffort(effort_for_action.clone()));
             tx.send(AppEvent::PersistModelSelection {
-                model: crate::model_alias::persisted_picker_model(
-                    &model_for_action,
-                    is_openai_provider,
-                ),
-                effort: effort_for_action,
+                model: model_for_action.clone(),
+                effort: effort_for_action.clone(),
             });
         })]
     }
@@ -248,7 +256,7 @@ impl ChatWidget {
     ) -> bool {
         if !self.collaboration_modes_enabled()
             || self.active_mode_kind() != ModeKind::Plan
-            || selected_model != self.current_model()
+            || !crate::model_alias::same_picker_model(selected_model, self.current_model())
         {
             return false;
         }
@@ -266,6 +274,9 @@ impl ChatWidget {
         model: String,
         effort: Option<ReasoningEffortConfig>,
     ) {
+        // Normalize to the persisted (provider-aliased) form so the live session
+        // model matches what gets written to config (see `model_selection_actions`).
+        let model = crate::model_alias::persisted_picker_model(&model, self.should_prefix_openai_alias());
         let reasoning_phrase = match effort.as_ref() {
             Some(ReasoningEffortConfig::None) => "no reasoning".to_string(),
             Some(selected_effort) => {
@@ -314,15 +325,14 @@ impl ChatWidget {
                 tx.send(AppEvent::PersistPlanModeReasoningEffort(effort.clone()));
             }
         })];
-        let is_openai = self.config.model_provider.is_openai();
         let all_modes_actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
             tx.send(AppEvent::UpdateModel(model.clone()));
             tx.send(AppEvent::UpdateReasoningEffort(effort.clone()));
             tx.send(AppEvent::UpdatePlanModeReasoningEffort(effort.clone()));
             tx.send(AppEvent::PersistPlanModeReasoningEffort(effort.clone()));
             tx.send(AppEvent::PersistModelSelection {
-                model: crate::model_alias::persisted_picker_model(&model, is_openai),
-                effort,
+                model: model.clone(),
+                effort: effort.clone(),
             });
         })];
 
@@ -413,7 +423,8 @@ impl ChatWidget {
             .or(Some(default_effort));
 
         let model_slug = preset.model.to_string();
-        let is_current_model = self.current_model() == preset.model.as_str();
+        let is_current_model =
+            crate::model_alias::same_picker_model(self.current_model(), preset.model.as_str());
         let highlight_choice = if is_current_model {
             if in_plan_mode {
                 self.config
@@ -456,11 +467,15 @@ impl ChatWidget {
                 None
             };
 
-            let model_for_action = model_slug.clone();
-            let choice_effort = choice.stored;
+            // Normalize to the persisted (provider-aliased) form so the live
+            // session model matches what gets written to config.
+            let model_for_action = crate::model_alias::persisted_picker_model(
+                &model_slug,
+                self.should_prefix_openai_alias(),
+            );
+            let choice_effort = Some(effort);
             let should_prompt_plan_mode_scope =
-                self.should_prompt_plan_mode_reasoning_scope(model_slug.as_str(), choice_effort);
-            let is_openai = self.config.model_provider.is_openai();
+                self.should_prompt_plan_mode_reasoning_scope(model_slug.as_str(), choice_effort.clone());
             let actions: Vec<SelectionAction> = vec![Box::new(move |tx| {
                 if should_prompt_plan_mode_scope {
                     tx.send(AppEvent::OpenPlanReasoningScopePrompt {
@@ -471,11 +486,8 @@ impl ChatWidget {
                     tx.send(AppEvent::UpdateModel(model_for_action.clone()));
                     tx.send(AppEvent::UpdateReasoningEffort(choice_effort.clone()));
                     tx.send(AppEvent::PersistModelSelection {
-                        model: crate::model_alias::persisted_picker_model(
-                            &model_for_action,
-                            is_openai,
-                        ),
-                        effort: choice_effort,
+                        model: model_for_action.clone(),
+                        effort: choice_effort.clone(),
                     });
                 }
             })];
@@ -534,14 +546,25 @@ impl ChatWidget {
             .send(AppEvent::UpdateReasoningEffort(effort));
     }
 
-    fn apply_model_and_effort(&self, model: String, effort: Option<ReasoningEffortConfig>) {
-        self.apply_model_and_effort_without_persist(model.clone(), effort);
-        let persisted = crate::model_alias::persisted_picker_model(
-            &model,
+    /// Whether picker selections should be persisted with the `openai-` alias
+    /// prefix. True for the native OpenAI provider, and for OpenAI-compatible
+    /// custom providers (e.g. snowhouse) whose configured model is already
+    /// aliased — so a fresh pick doesn't drop a prefix the backend requires.
+    pub(super) fn should_prefix_openai_alias(&self) -> bool {
+        crate::model_alias::should_prefix_openai_alias(
             self.config.model_provider.is_openai(),
-        );
+            self.config.model.as_deref().unwrap_or_default(),
+        )
+    }
+
+    fn apply_model_and_effort(&self, model: String, effort: Option<ReasoningEffortConfig>) {
+        // Normalize to the persisted (provider-aliased) form so the live session
+        // model matches what gets written to config.
+        let model =
+            crate::model_alias::persisted_picker_model(&model, self.should_prefix_openai_alias());
+        self.apply_model_and_effort_without_persist(model.clone(), effort.clone());
         self.app_event_tx.send(AppEvent::PersistModelSelection {
-            model: persisted,
+            model,
             effort,
         });
     }

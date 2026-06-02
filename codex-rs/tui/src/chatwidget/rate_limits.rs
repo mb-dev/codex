@@ -253,7 +253,7 @@ impl ChatWidget {
             if high_usage
                 && !has_workspace_credits
                 && !self.rate_limit_switch_prompt_hidden()
-                && self.current_model() != NUDGE_MODEL_SLUG
+                && !crate::model_alias::same_picker_model(self.current_model(), NUDGE_MODEL_SLUG)
                 && !matches!(
                     self.rate_limit_switch_prompt,
                     RateLimitSwitchPromptState::Shown
@@ -330,7 +330,11 @@ impl ChatWidget {
     }
 
     fn open_rate_limit_switch_prompt(&mut self, preset: ModelPreset) {
-        let switch_model = preset.model;
+        // Normalize to the persisted (provider-aliased) form so the switched-to
+        // model matches what the backend expects on the wire (e.g. snowhouse
+        // routes on the `openai-` alias).
+        let switch_model =
+            crate::model_alias::persisted_picker_model(&preset.model, self.should_prefix_openai_alias());
         let switch_model_for_events = switch_model.clone();
         let default_effort: ReasoningEffortConfig = preset.default_reasoning_effort;
 

@@ -24,8 +24,8 @@ pub(crate) fn find_matching_picker_preset<'a>(
         .find(|preset| matches_picker_preset(model, preset))
 }
 
-pub(crate) fn persisted_picker_model(model: &str, is_openai_provider: bool) -> String {
-    if is_openai_provider
+pub(crate) fn persisted_picker_model(model: &str, prefix_openai_alias: bool) -> String {
+    if prefix_openai_alias
         && !model.starts_with(OPENAI_MODEL_PREFIX)
         && !model.starts_with(CODEX_AUTO_PREFIX)
     {
@@ -33,6 +33,17 @@ pub(crate) fn persisted_picker_model(model: &str, is_openai_provider: bool) -> S
     } else {
         model.to_string()
     }
+}
+
+/// Whether a picker selection should be persisted with the `openai-` alias prefix.
+///
+/// True for the native OpenAI provider, and for OpenAI-compatible providers
+/// reached through a custom `model_provider` (e.g. Snowflake/snowhouse) where the
+/// configured model already carries the `openai-` alias the backend routes on.
+/// Mirroring the user's existing alias style keeps a fresh pick from dropping a
+/// prefix the provider requires.
+pub(crate) fn should_prefix_openai_alias(is_openai_provider: bool, current_model: &str) -> bool {
+    is_openai_provider || current_model.starts_with(OPENAI_MODEL_PREFIX)
 }
 
 #[cfg(test)]
@@ -87,16 +98,35 @@ mod tests {
     #[test]
     fn persisted_picker_model_prefixes_openai_models() {
         assert_eq!(
-            persisted_picker_model("gpt-5.4", /*is_openai_provider*/ true),
+            persisted_picker_model("gpt-5.4", /*prefix_openai_alias*/ true),
             "openai-gpt-5.4"
         );
         assert_eq!(
-            persisted_picker_model("codex-auto-fast", /*is_openai_provider*/ true),
+            persisted_picker_model("codex-auto-fast", /*prefix_openai_alias*/ true),
             "codex-auto-fast"
         );
         assert_eq!(
-            persisted_picker_model("gpt-5.4", /*is_openai_provider*/ false),
+            persisted_picker_model("gpt-5.4", /*prefix_openai_alias*/ false),
             "gpt-5.4"
         );
+    }
+
+    #[test]
+    fn should_prefix_openai_alias_follows_provider_or_configured_alias() {
+        // Native OpenAI provider always prefixes.
+        assert!(should_prefix_openai_alias(
+            /*is_openai_provider*/ true,
+            "gpt-5.4"
+        ));
+        // Custom provider (e.g. snowhouse) whose configured model is already aliased.
+        assert!(should_prefix_openai_alias(
+            /*is_openai_provider*/ false,
+            "openai-gpt-5.4"
+        ));
+        // Custom provider on a bare (non-OpenAI) model leaves the slug untouched.
+        assert!(!should_prefix_openai_alias(
+            /*is_openai_provider*/ false,
+            "qwen3.6-35b-a3b"
+        ));
     }
 }

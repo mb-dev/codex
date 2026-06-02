@@ -186,8 +186,13 @@ pub(super) fn apply_accepted_model_migration(
     target_model: String,
     target_default_effort: ReasoningEffortConfig,
 ) {
-    let persisted_target =
-        crate::model_alias::persisted_picker_model(&target_model, config.model_provider.is_openai());
+    let persisted_target = crate::model_alias::persisted_picker_model(
+        &target_model,
+        crate::model_alias::should_prefix_openai_alias(
+            config.model_provider.is_openai(),
+            config.model.as_deref().unwrap_or(&from_model),
+        ),
+    );
     app_event_tx.send(AppEvent::PersistModelMigrationPromptAcknowledged {
         from_model,
         to_model: persisted_target.clone(),
