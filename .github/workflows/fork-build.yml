@@ -176,6 +176,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          repository: ${{ needs.official-release.outputs.is_official_release == 'true' && 'openai/codex' || github.repository }}
           ref: ${{ needs.official-release.outputs.build_sha }}
           persist-credentials: false
 
@@ -187,6 +188,7 @@ jobs:
           echo "OS: $(uname -a)"
           echo "Target: ${{ matrix.target }}"
           echo "Build SHA: ${{ needs.official-release.outputs.build_sha }}"
+          echo "Build repository: ${{ needs.official-release.outputs.is_official_release == 'true' && 'openai/codex' || github.repository }}"
           echo "Disk usage:"
           df -h .
 
@@ -354,6 +356,56 @@ jobs:
           path: release-assets
           merge-multiple: true
 
+      - name: Mirror official tag
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_SHA: ${{ needs.official-release.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.official-release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          fork_url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
+          existing_tag_commit="$(
+            git ls-remote --tags "$fork_url" \
+              "refs/tags/${RELEASE_TAG}" \
+              "refs/tags/${RELEASE_TAG}^{}" |
+              awk '
+                $2 ~ /\^\{\}$/ { peeled = $1 }
+                $2 !~ /\^\{\}$/ { unpeeled = $1 }
+                END {
+                  if (peeled != "") {
+                    print peeled
+                  } else {
+                    print unpeeled
+                  }
+                }
+              '
+          )"
+
+          if [[ -n "$existing_tag_commit" ]]; then
+            if [[ "$existing_tag_commit" != "$RELEASE_SHA" ]]; then
+              echo "Fork tag ${RELEASE_TAG} points to ${existing_tag_commit}, expected ${RELEASE_SHA}" >&2
+              exit 1
+            fi
+            exit 0
+          fi
+
+          tag_dir="${RUNNER_TEMP}/official-release-tag"
+          git init "$tag_dir"
+          git -C "$tag_dir" fetch --depth=1 --no-tags \
+            https://github.com/openai/codex.git \
+            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+
+          actual_release_sha="$(git -C "$tag_dir" rev-parse "${RELEASE_TAG}^{commit}")"
+          if [[ "$actual_release_sha" != "$RELEASE_SHA" ]]; then
+            echo "Official tag ${RELEASE_TAG} resolved to ${actual_release_sha}, expected ${RELEASE_SHA}" >&2
+            exit 1
+          fi
+
+          git -C "$tag_dir" push "$fork_url" \
+            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+
       - name: Create or update release
         shell: bash
         env:
@@ -380,7 +432,7 @@ jobs:
             --repo "$GITHUB_REPOSITORY"
             --title "$RELEASE_NAME"
             --notes-file "$release_notes"
-            --target "$RELEASE_SHA"
+            --verify-tag
           )
           if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
             release_args+=(--prerelease)
