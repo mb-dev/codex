@@ -1,0 +1,196 @@
+name: fork-build
+
+on:
+  workflow_dispatch:
+  push:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_NET_GIT_FETCH_WITH_CLI: "true"
+
+jobs:
+  build:
+    if: github.repository != 'openai/codex'
+    name: Build ${{ matrix.target }}
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 120
+    defaults:
+      run:
+        working-directory: codex-rs
+
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            artifact_name: codex-aarch64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            artifact_name: codex-x86_64-unknown-linux-musl
+
+    steps:
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          persist-credentials: false
+
+      - name: Print runner specs
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "Runner: ${RUNNER_NAME:-unknown}"
+          echo "OS: $(uname -a)"
+          echo "Target: ${{ matrix.target }}"
+          echo "Disk usage:"
+          df -h .
+
+      - uses: dtolnay/rust-toolchain@e081816240890017053eacbb1bdf337761dc5582 # 1.95.0
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install macOS archive tools
+        if: runner.os == 'macOS'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if ! command -v zstd >/dev/null 2>&1; then
+            brew install zstd
+          fi
+
+      - name: Use hermetic Cargo home
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo_home="${GITHUB_WORKSPACE}/.cargo-home"
+          mkdir -p "${cargo_home}/bin"
+          echo "CARGO_HOME=${cargo_home}" >> "$GITHUB_ENV"
+          echo "${cargo_home}/bin" >> "$GITHUB_PATH"
+          : > "${cargo_home}/config.toml"
+
+      - name: Install Zig
+        if: runner.os == 'Linux'
+        uses: mlugg/setup-zig@d1434d08867e3ee9daa34448df10607b98908d29 # v2.2.1
+        with:
+          version: 0.14.0
+          use-cache: false
+
+      - name: Install Linux build tools
+        if: runner.os == 'Linux'
+        env:
+          TARGET: ${{ matrix.target }}
+          APT_UPDATE_ARGS: "-y"
+          APT_INSTALL_ARGS: "--no-install-recommends"
+        run: |
+          set -euo pipefail
+          bash "${GITHUB_WORKSPACE}/.github/scripts/install-musl-build-tools.sh"
+          sudo DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends zstd
+
+      - name: Disable aws-lc jitter entropy
+        if: runner.os == 'Linux'
+        shell: bash
+        run: |
+          set -euo pipefail
+          echo "AWS_LC_SYS_NO_JITTER_ENTROPY=1" >> "$GITHUB_ENV"
+          target_no_jitter="AWS_LC_SYS_NO_JITTER_ENTROPY_${{ matrix.target }}"
+          target_no_jitter="${target_no_jitter//-/_}"
+          echo "${target_no_jitter}=1" >> "$GITHUB_ENV"
+
+      - name: Configure rusty_v8 artifact overrides and verify checksums
+        uses: ./.github/actions/setup-rusty-v8
+        with:
+          target: ${{ matrix.target }}
+
+      - name: Build binaries
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          binaries=(codex codex-responses-api-proxy codex-app-server)
+          if [[ "$target" == *linux* ]]; then
+            binaries+=(bwrap)
+          fi
+
+          build_args=()
+          for binary in "${binaries[@]}"; do
+            build_args+=(--bin "$binary")
+          done
+
+          cargo build --target "$target" --release --timings "${build_args[@]}"
+
+      - name: Upload Cargo timings
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: cargo-timings-fork-build-${{ matrix.target }}
+          path: codex-rs/target/**/cargo-timings/cargo-timing.html
+          if-no-files-found: warn
+
+      - name: Stage binary archives
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          release_dir="target/${target}/release"
+          dest="dist/${target}"
+          mkdir -p "$dest"
+
+          binaries=(codex codex-responses-api-proxy codex-app-server)
+          if [[ "$target" == *linux* ]]; then
+            binaries+=(bwrap)
+          fi
+
+          for binary in "${binaries[@]}"; do
+            src="${release_dir}/${binary}"
+            staged_name="${binary}-${target}"
+            staged_path="${dest}/${staged_name}"
+            if [[ ! -f "$src" ]]; then
+              echo "Binary ${src} not found" >&2
+              exit 1
+            fi
+
+            cp "$src" "$staged_path"
+            tar -C "$dest" -czf "${staged_path}.tar.gz" "$staged_name"
+            zstd -T0 -19 -f "$staged_path" -o "${staged_path}.zst"
+            rm "$staged_path"
+          done
+
+      - name: Build Codex package archives
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          set -euo pipefail
+          for bundle in primary app-server; do
+            bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
+              --target "$TARGET" \
+              --bundle "$bundle" \
+              --entrypoint-dir "target/${TARGET}/release" \
+              --archive-dir "dist/${TARGET}"
+          done
+
+      - name: Summarize artifacts
+        shell: bash
+        run: |
+          set -euo pipefail
+          target="${{ matrix.target }}"
+          {
+            echo "### ${target}"
+            echo
+            echo '```text'
+            find "dist/${target}" -maxdepth 1 -type f -print | sort
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@bbbca2ddaa5d8feaa63e36b76fdaad77386f024f # v7.0.0
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: codex-rs/dist/${{ matrix.target }}/*
+          if-no-files-found: error
+          retention-days: 14
