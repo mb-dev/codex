@@ -2,6 +2,11 @@ name: fork-build
 
 on:
   workflow_dispatch:
+    inputs:
+      official_release_tag:
+        description: "Optional openai/codex release tag to mirror, such as rust-v0.137.0"
+        required: false
+        type: string
   push:
 
 concurrency:
@@ -15,8 +20,141 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
+  official-release:
+    if: github.repository != 'openai/codex'
+    name: Detect official release
+    runs-on: ubuntu-latest
+    outputs:
+      build_sha: ${{ steps.detect.outputs.build_sha }}
+      is_official_release: ${{ steps.detect.outputs.is_official_release }}
+      official_release_url: ${{ steps.detect.outputs.official_release_url }}
+      release_name: ${{ steps.detect.outputs.release_name }}
+      release_tag: ${{ steps.detect.outputs.release_tag }}
+      release_sha: ${{ steps.detect.outputs.release_sha }}
+      release_prerelease: ${{ steps.detect.outputs.release_prerelease }}
+    steps:
+      - name: Detect matching official release
+        id: detect
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REQUESTED_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.official_release_tag || '' }}
+        run: |
+          set -euo pipefail
+
+          tags_file="${RUNNER_TEMP}/openai-codex-tags.tsv"
+          releases_file="${RUNNER_TEMP}/openai-codex-releases.tsv"
+
+          git ls-remote --tags https://github.com/openai/codex.git 'refs/tags/rust-v*' > "$tags_file"
+          gh api --paginate repos/openai/codex/releases \
+            --jq '.[] | select(.draft | not) | [.tag_name, (.name // .tag_name), (.prerelease | tostring), .html_url] | @tsv' \
+            > "$releases_file"
+
+          python3 - "$tags_file" "$releases_file" <<'PY' >> "$GITHUB_OUTPUT"
+          import os
+          import sys
+
+          tags_path, releases_path = sys.argv[1:]
+          current_sha = os.environ["GITHUB_SHA"]
+          requested_tag = os.environ.get("REQUESTED_RELEASE_TAG", "").strip()
+
+          peeled = {}
+          unpeeled = {}
+          with open(tags_path, encoding="utf-8") as tags_file:
+              for line in tags_file:
+                  sha, ref = line.rstrip("\n").split("\t", 1)
+                  if not ref.startswith("refs/tags/"):
+                      continue
+
+                  tag = ref.removeprefix("refs/tags/")
+                  if tag.endswith("^{}"):
+                      peeled[tag.removesuffix("^{}")] = sha
+                  else:
+                      unpeeled[tag] = sha
+
+          tag_shas = {
+              tag: peeled.get(tag, sha)
+              for tag, sha in unpeeled.items()
+              if tag.startswith("rust-v")
+          }
+
+          releases = []
+          with open(releases_path, encoding="utf-8") as releases_file:
+              for line in releases_file:
+                  tag, name, prerelease, url = line.rstrip("\n").split("\t", 3)
+                  if not tag.startswith("rust-v"):
+                      continue
+                  release_sha = tag_shas.get(tag)
+                  if release_sha is None:
+                      continue
+                  releases.append(
+                      {
+                          "tag": tag,
+                          "name": name or tag,
+                          "prerelease": prerelease,
+                          "url": url,
+                          "sha": release_sha,
+                      }
+                  )
+
+          selected = None
+          if requested_tag:
+              selected = next(
+                  (release for release in releases if release["tag"] == requested_tag),
+                  None,
+              )
+              if selected is None:
+                  raise SystemExit(
+                      f"{requested_tag} is not a published openai/codex rust release tag"
+                  )
+          else:
+              selected = next(
+                  (release for release in releases if release["sha"] == current_sha),
+                  None,
+              )
+
+          if selected is None:
+              print(f"build_sha={current_sha}")
+              print("is_official_release=false")
+              print("release_tag=")
+              print("release_name=")
+              print("release_sha=")
+              print("release_prerelease=false")
+              print("official_release_url=")
+          else:
+              print(f"build_sha={selected['sha']}")
+              print("is_official_release=true")
+              print(f"release_tag={selected['tag']}")
+              print(f"release_name={selected['name']}")
+              print(f"release_sha={selected['sha']}")
+              print(f"release_prerelease={selected['prerelease']}")
+              print(f"official_release_url={selected['url']}")
+          PY
+
+      - name: Summarize release detection
+        shell: bash
+        env:
+          IS_OFFICIAL_RELEASE: ${{ steps.detect.outputs.is_official_release }}
+          RELEASE_TAG: ${{ steps.detect.outputs.release_tag }}
+          RELEASE_SHA: ${{ steps.detect.outputs.release_sha }}
+          BUILD_SHA: ${{ steps.detect.outputs.build_sha }}
+          OFFICIAL_RELEASE_URL: ${{ steps.detect.outputs.official_release_url }}
+        run: |
+          set -euo pipefail
+          if [[ "$IS_OFFICIAL_RELEASE" == "true" ]]; then
+            {
+              echo "Official release: ${RELEASE_TAG}"
+              echo "Official commit: ${RELEASE_SHA}"
+              echo "Official URL: ${OFFICIAL_RELEASE_URL}"
+            } >> "$GITHUB_STEP_SUMMARY"
+          else
+            echo "No matching official openai/codex release for ${BUILD_SHA}; release publishing will be skipped." \
+              >> "$GITHUB_STEP_SUMMARY"
+          fi
+
   build:
     if: github.repository != 'openai/codex'
+    needs: official-release
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
@@ -38,6 +176,7 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
+          ref: ${{ needs.official-release.outputs.build_sha }}
           persist-credentials: false
 
       - name: Print runner specs
@@ -47,6 +186,7 @@ jobs:
           echo "Runner: ${RUNNER_NAME:-unknown}"
           echo "OS: $(uname -a)"
           echo "Target: ${{ matrix.target }}"
+          echo "Build SHA: ${{ needs.official-release.outputs.build_sha }}"
           echo "Disk usage:"
           df -h .
 
@@ -194,3 +334,70 @@ jobs:
           path: codex-rs/dist/${{ matrix.target }}/*
           if-no-files-found: error
           retention-days: 14
+
+  publish-release:
+    if: >-
+      github.repository != 'openai/codex' &&
+      needs.official-release.outputs.is_official_release == 'true'
+    needs:
+      - official-release
+      - build
+    name: Publish ${{ needs.official-release.outputs.release_tag }}
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Download build artifacts
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v8.0.1
+        with:
+          pattern: codex-*
+          path: release-assets
+          merge-multiple: true
+
+      - name: Create or update release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          OFFICIAL_RELEASE_URL: ${{ needs.official-release.outputs.official_release_url }}
+          RELEASE_NAME: ${{ needs.official-release.outputs.release_name }}
+          RELEASE_PRERELEASE: ${{ needs.official-release.outputs.release_prerelease }}
+          RELEASE_SHA: ${{ needs.official-release.outputs.release_sha }}
+          RELEASE_TAG: ${{ needs.official-release.outputs.release_tag }}
+        run: |
+          set -euo pipefail
+
+          release_notes="${RUNNER_TEMP}/fork-release-notes.md"
+          {
+            printf 'Fork build for official openai/codex release [%s](%s).\n\n' \
+              "$RELEASE_TAG" "$OFFICIAL_RELEASE_URL"
+            printf 'Source commit: %s\n' "$RELEASE_SHA"
+            printf 'Workflow run: %s/%s/actions/runs/%s\n\n' \
+              "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
+            printf 'These are unsigned fork builds for macOS arm64 and Linux x86_64 musl.\n'
+          } > "$release_notes"
+
+          release_args=(
+            --repo "$GITHUB_REPOSITORY"
+            --title "$RELEASE_NAME"
+            --notes-file "$release_notes"
+            --target "$RELEASE_SHA"
+          )
+          if [[ "$RELEASE_PRERELEASE" == "true" ]]; then
+            release_args+=(--prerelease)
+          fi
+
+          if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+            gh release edit "$RELEASE_TAG" "${release_args[@]}"
+          else
+            gh release create "$RELEASE_TAG" "${release_args[@]}"
+          fi
+
+          mapfile -t assets < <(find release-assets -type f -print | sort)
+          if ((${#assets[@]} == 0)); then
+            echo "No release assets found" >&2
+            exit 1
+          fi
+
+          gh release upload "$RELEASE_TAG" "${assets[@]}" \
+            --repo "$GITHUB_REPOSITORY" \
+            --clobber
