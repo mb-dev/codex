@@ -43,7 +43,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
-          IS_DEFAULT_BRANCH: ${{ github.ref_type == 'branch' && github.ref_name == github.event.repository.default_branch }}
+          IS_BRANCH_REF: ${{ github.ref_type == 'branch' }}
           REQUESTED_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.official_release_tag || '' }}
         run: |
           set -euo pipefail
@@ -67,7 +67,7 @@ jobs:
 
           tags_path, releases_path, fork_releases_path = sys.argv[1:]
           current_sha = os.environ["GITHUB_SHA"]
-          is_default_branch = os.environ.get("IS_DEFAULT_BRANCH") == "true"
+          is_branch_ref = os.environ.get("IS_BRANCH_REF") == "true"
           requested_tag = os.environ.get("REQUESTED_RELEASE_TAG", "").strip()
 
           peeled = {}
@@ -126,12 +126,31 @@ jobs:
                   raise SystemExit(
                       f"{requested_tag} is not a published openai/codex rust release tag"
                   )
+              if (
+                  subprocess.run(
+                      [
+                          "git",
+                          "merge-base",
+                          "--is-ancestor",
+                          selected["sha"],
+                          current_sha,
+                      ],
+                      check=False,
+                      stdout=subprocess.DEVNULL,
+                      stderr=subprocess.DEVNULL,
+                  ).returncode
+                  != 0
+              ):
+                  raise SystemExit(
+                      f"{requested_tag} resolves to {selected['sha']}, "
+                      f"which is not an ancestor of fork build commit {current_sha}"
+                  )
           else:
               selected = next(
                   (release for release in releases if release["sha"] == current_sha),
                   None,
               )
-              if selected is None and is_default_branch:
+              if selected is None and is_branch_ref:
                   selected = next(
                       (
                           release
@@ -163,7 +182,7 @@ jobs:
               print("release_prerelease=false")
               print("official_release_url=")
           else:
-              print(f"build_sha={selected['sha']}")
+              print(f"build_sha={current_sha}")
               print("is_official_release=true")
               print(f"release_tag={selected['tag']}")
               print(f"release_name={selected['name']}")
@@ -186,6 +205,7 @@ jobs:
             {
               echo "Official release: ${RELEASE_TAG}"
               echo "Official commit: ${RELEASE_SHA}"
+              echo "Fork build commit: ${BUILD_SHA}"
               echo "Official URL: ${OFFICIAL_RELEASE_URL}"
             } >> "$GITHUB_STEP_SUMMARY"
           else
@@ -217,7 +237,6 @@ jobs:
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          repository: ${{ needs.official-release.outputs.is_official_release == 'true' && 'openai/codex' || github.repository }}
           ref: ${{ needs.official-release.outputs.build_sha }}
           persist-credentials: false
 
@@ -229,7 +248,7 @@ jobs:
           echo "OS: $(uname -a)"
           echo "Target: ${{ matrix.target }}"
           echo "Build SHA: ${{ needs.official-release.outputs.build_sha }}"
-          echo "Build repository: ${{ needs.official-release.outputs.is_official_release == 'true' && 'openai/codex' || github.repository }}"
+          echo "Official release SHA: ${{ needs.official-release.outputs.release_sha }}"
           echo "Disk usage:"
           df -h .
 
@@ -397,9 +416,10 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Mirror official tag
+      - name: Create fork release tag
         shell: bash
         env:
+          BUILD_SHA: ${{ needs.official-release.outputs.build_sha }}
           GH_TOKEN: ${{ github.token }}
           RELEASE_SHA: ${{ needs.official-release.outputs.release_sha }}
           RELEASE_TAG: ${{ needs.official-release.outputs.release_tag }}
@@ -425,27 +445,28 @@ jobs:
           )"
 
           if [[ -n "$existing_tag_commit" ]]; then
-            if [[ "$existing_tag_commit" != "$RELEASE_SHA" ]]; then
-              echo "Fork tag ${RELEASE_TAG} points to ${existing_tag_commit}, expected ${RELEASE_SHA}" >&2
+            if [[ "$existing_tag_commit" == "$BUILD_SHA" ]]; then
+              exit 0
+            fi
+            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+              echo "Fork release ${RELEASE_TAG} already exists but its tag points to ${existing_tag_commit}, expected ${BUILD_SHA}" >&2
               exit 1
             fi
-            exit 0
+            echo "Retargeting unpublished fork tag ${RELEASE_TAG} from ${existing_tag_commit} to ${BUILD_SHA}."
           fi
 
-          tag_dir="${RUNNER_TEMP}/official-release-tag"
+          tag_dir="${RUNNER_TEMP}/fork-release-tag"
           git init "$tag_dir"
           git -C "$tag_dir" fetch --depth=1 --no-tags \
-            https://github.com/openai/codex.git \
-            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+            "$fork_url" "$BUILD_SHA"
+          git -C "$tag_dir" tag -f "$RELEASE_TAG" "$BUILD_SHA"
 
-          actual_release_sha="$(git -C "$tag_dir" rev-parse "${RELEASE_TAG}^{commit}")"
-          if [[ "$actual_release_sha" != "$RELEASE_SHA" ]]; then
-            echo "Official tag ${RELEASE_TAG} resolved to ${actual_release_sha}, expected ${RELEASE_SHA}" >&2
-            exit 1
+          push_args=()
+          if [[ -n "$existing_tag_commit" ]]; then
+            push_args+=(--force)
           fi
-
-          git -C "$tag_dir" push "$fork_url" \
-            "refs/tags/${RELEASE_TAG}:refs/tags/${RELEASE_TAG}"
+          git -C "$tag_dir" push "${push_args[@]}" "$fork_url" \
+            "refs/tags/${RELEASE_TAG}"
 
       - name: Create or update release
         shell: bash
@@ -463,7 +484,8 @@ jobs:
           {
             printf 'Fork build for official openai/codex release [%s](%s).\n\n' \
               "$RELEASE_TAG" "$OFFICIAL_RELEASE_URL"
-            printf 'Source commit: %s\n' "$RELEASE_SHA"
+            printf 'Official release commit: %s\n' "$RELEASE_SHA"
+            printf 'Fork build commit: %s\n' "$GITHUB_SHA"
             printf 'Workflow run: %s/%s/actions/runs/%s\n\n' \
               "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
             printf 'These are unsigned fork builds for macOS arm64 and Linux x86_64 musl.\n'
