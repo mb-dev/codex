@@ -227,7 +227,7 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - runner: macos-15-xlarge
+          - runner: macos-15
             target: aarch64-apple-darwin
             artifact_name: codex-aarch64-apple-darwin
           - runner: ubuntu-24.04
@@ -314,7 +314,7 @@ jobs:
         run: |
           set -euo pipefail
           target="${{ matrix.target }}"
-          binaries=(codex codex-responses-api-proxy)
+          binaries=(codex)
           if [[ "$target" == *linux* ]]; then
             binaries+=(bwrap)
           fi
@@ -342,7 +342,7 @@ jobs:
           dest="dist/${target}"
           mkdir -p "$dest"
 
-          binaries=(codex codex-responses-api-proxy)
+          binaries=(codex)
           if [[ "$target" == *linux* ]]; then
             binaries+=(bwrap)
           fi
@@ -486,7 +486,7 @@ jobs:
             printf 'Fork build commit: %s\n' "$GITHUB_SHA"
             printf 'Workflow run: %s/%s/actions/runs/%s\n\n' \
               "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
-            printf 'These are unsigned fork builds for macOS arm64 and Linux x86_64 musl.\n'
+            printf 'These are unsigned Codex fork builds for macOS arm64 and Linux x86_64 musl.\n'
           } > "$release_notes"
 
           release_args=(
