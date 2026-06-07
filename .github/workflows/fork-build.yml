@@ -314,7 +314,7 @@ jobs:
         run: |
           set -euo pipefail
           target="${{ matrix.target }}"
-          binaries=(codex codex-responses-api-proxy codex-app-server)
+          binaries=(codex codex-responses-api-proxy)
           if [[ "$target" == *linux* ]]; then
             binaries+=(bwrap)
           fi
@@ -342,7 +342,7 @@ jobs:
           dest="dist/${target}"
           mkdir -p "$dest"
 
-          binaries=(codex codex-responses-api-proxy codex-app-server)
+          binaries=(codex codex-responses-api-proxy)
           if [[ "$target" == *linux* ]]; then
             binaries+=(bwrap)
           fi
@@ -368,13 +368,11 @@ jobs:
           TARGET: ${{ matrix.target }}
         run: |
           set -euo pipefail
-          for bundle in primary app-server; do
-            bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
-              --target "$TARGET" \
-              --bundle "$bundle" \
-              --entrypoint-dir "target/${TARGET}/release" \
-              --archive-dir "dist/${TARGET}"
-          done
+          bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \
+            --target "$TARGET" \
+            --bundle primary \
+            --entrypoint-dir "target/${TARGET}/release" \
+            --archive-dir "dist/${TARGET}"
 
       - name: Summarize artifacts
         shell: bash
