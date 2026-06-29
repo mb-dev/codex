@@ -66,9 +66,24 @@ async fn model_migration_prompt_only_shows_for_deprecated_models() {
     assert!(should_show_model_migration_prompt(
         "gpt-5.4", "gpt-5.5", &seen, &presets
     ));
+    assert!(should_show_model_migration_prompt(
+        "openai-gpt-5.3-codex",
+        "gpt-5.4",
+        &seen,
+        &all_model_presets()
+    ));
     assert!(!should_show_model_migration_prompt(
         "gpt-5.4", "gpt-5.4", &seen, &presets
     ));
+}
+
+#[test]
+fn target_preset_for_upgrade_matches_openai_prefixed_aliases() {
+    assert_eq!(
+        target_preset_for_upgrade(&all_model_presets(), "openai-gpt-5.4")
+            .map(|preset| preset.model.as_str()),
+        Some("gpt-5.4")
+    );
 }
 
 #[test]
@@ -241,7 +256,7 @@ async fn accepted_model_migration_persists_target_default_reasoning_effort() {
         ReasoningEffortConfig::Medium,
     );
 
-    assert_eq!(config.model.as_deref(), Some("gpt-5.4"));
+    assert_eq!(config.model.as_deref(), Some("openai-gpt-5.4"));
     assert_eq!(
         config.model_reasoning_effort,
         Some(ReasoningEffortConfig::Medium)
@@ -251,13 +266,13 @@ async fn accepted_model_migration_persists_target_default_reasoning_effort() {
     assert_matches!(
         acknowledged,
         AppEvent::PersistModelMigrationPromptAcknowledged { from_model, to_model }
-            if from_model == "gpt-5.2" && to_model == "gpt-5.4"
+            if from_model == "gpt-5.2" && to_model == "openai-gpt-5.4"
     );
 
     let update_model = rx.try_recv().expect("update model event");
     assert_matches!(
         update_model,
-        AppEvent::UpdateModel(model) if model == "gpt-5.4"
+        AppEvent::UpdateModel(model) if model == "openai-gpt-5.4"
     );
 
     let update_effort = rx.try_recv().expect("update effort event");
@@ -270,7 +285,7 @@ async fn accepted_model_migration_persists_target_default_reasoning_effort() {
     assert_matches!(
         persist_selection,
         AppEvent::PersistModelSelection { model, effort }
-            if model == "gpt-5.4" && effort == Some(ReasoningEffortConfig::Medium)
+            if model == "openai-gpt-5.4" && effort == Some(ReasoningEffortConfig::Medium)
     );
 }
 

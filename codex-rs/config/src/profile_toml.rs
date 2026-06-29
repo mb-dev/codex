@@ -69,6 +69,12 @@ pub struct ConfigProfile {
     #[schemars(schema_with = "crate::schema::features_schema")]
     pub features: Option<FeaturesToml>,
     pub oss_provider: Option<String>,
+    /// Optional whitelist of MCP server names to expose while this profile is active.
+    ///
+    /// - `None` (omitted): keep the global `mcp_servers` behavior.
+    /// - `Some(vec![])`: disable all MCP servers for this profile.
+    /// - `Some(["foo", "bar"])`: only expose the named servers from the global config.
+    pub enabled_mcp_servers: Option<Vec<String>>,
 }
 
 /// TUI settings supported inside a named profile.
