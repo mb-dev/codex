@@ -24,6 +24,7 @@ base_url = "http://localhost:11434/v1"
         http_headers: None,
         env_http_headers: None,
         request_max_retries: None,
+        request_retry_429: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
@@ -59,6 +60,7 @@ query_params = { api-version = "2025-04-01-preview" }
         http_headers: None,
         env_http_headers: None,
         request_max_retries: None,
+        request_retry_429: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
@@ -98,6 +100,7 @@ supports_standalone_web_search = true
             "X-Example-Env-Header".to_string() => "EXAMPLE_ENV_VAR".to_string(),
         }),
         request_max_retries: None,
+        request_retry_429: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
@@ -137,6 +140,33 @@ supports_websockets = true
 }
 
 #[test]
+fn test_deserialize_request_retry_429() {
+    let provider_toml = r#"
+name = "Snowhouse"
+base_url = "https://snowhouse.example/v1"
+request_max_retries = 8
+request_retry_429 = true
+        "#;
+
+    let provider: ModelProviderInfo = toml::from_str(provider_toml).unwrap();
+    assert_eq!(provider.request_max_retries, Some(8));
+    assert_eq!(provider.request_retry_429, Some(true));
+
+    let api_provider = provider
+        .to_api_provider(/*auth_mode*/ None)
+        .expect("provider should build API provider");
+    assert_eq!(api_provider.retry.max_attempts, 8);
+    assert!(api_provider.retry.retry_429);
+}
+
+#[test]
+fn test_supports_remote_compaction_for_openai() {
+    let provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None);
+
+    assert!(provider.supports_remote_compaction());
+}
+
+#[test]
 fn test_personal_access_token_uses_chatgpt_codex_base_url() {
     let api_provider = ModelProviderInfo::create_openai_provider(/*base_url*/ None)
         .to_api_provider(Some(AuthMode::PersonalAccessToken))
@@ -152,6 +182,60 @@ fn test_header_auth_uses_chatgpt_codex_base_url() {
         .expect("OpenAI provider should build API provider");
 
     assert_eq!(api_provider.base_url, CHATGPT_CODEX_BASE_URL);
+}
+
+#[test]
+fn test_supports_remote_compaction_for_azure_name() {
+    let provider = ModelProviderInfo {
+        name: "Azure".into(),
+        base_url: Some("https://example.com/openai".into()),
+        env_key: Some("AZURE_OPENAI_API_KEY".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        request_retry_429: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        supports_standalone_web_search: false,
+    };
+
+    assert!(provider.supports_remote_compaction());
+}
+
+#[test]
+fn test_supports_remote_compaction_for_non_openai_non_azure_provider() {
+    let provider = ModelProviderInfo {
+        name: "Example".into(),
+        base_url: Some("https://example.com/v1".into()),
+        env_key: Some("API_KEY".into()),
+        env_key_instructions: None,
+        experimental_bearer_token: None,
+        auth: None,
+        aws: None,
+        wire_api: WireApi::Responses,
+        query_params: None,
+        http_headers: None,
+        env_http_headers: None,
+        request_max_retries: None,
+        request_retry_429: None,
+        stream_max_retries: None,
+        stream_idle_timeout_ms: None,
+        websocket_connect_timeout_ms: None,
+        requires_openai_auth: false,
+        supports_websockets: false,
+        supports_standalone_web_search: false,
+    };
+
+    assert!(!provider.supports_remote_compaction());
 }
 
 #[test]
@@ -252,6 +336,7 @@ fn test_create_amazon_bedrock_provider() {
             }),
             env_http_headers: None,
             request_max_retries: None,
+            request_retry_429: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,

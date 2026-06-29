@@ -651,15 +651,26 @@ fn find_model_by_namespaced_suffix(model: &str, candidates: &[ModelInfo]) -> Opt
     find_model_by_longest_prefix(suffix, candidates)
 }
 
+/// Retry metadata lookup for provider-prefixed aliases like `openai-gpt-5.4`.
+///
+/// This is intentionally narrow: only the known `openai-` prefix is stripped, and only when
+/// the stripped slug already resolves to a known candidate.
+fn find_model_by_openai_prefix_alias(model: &str, candidates: &[ModelInfo]) -> Option<ModelInfo> {
+    let stripped = model.strip_prefix("openai-")?;
+    find_model_by_longest_prefix(stripped, candidates)
+}
+
 pub(crate) fn construct_model_info_from_candidates(
     model: &str,
     candidates: &[ModelInfo],
     config: &ModelsManagerConfig,
 ) -> ModelInfo {
     // First use the normal longest-prefix match. If that misses, allow a narrowly scoped
-    // retry for namespaced slugs like `custom/gpt-5.3-codex`.
+    // retry for namespaced slugs like `custom/gpt-5.3-codex` or provider-prefixed aliases
+    // like `openai-gpt-5.4`.
     let remote = find_model_by_longest_prefix(model, candidates)
-        .or_else(|| find_model_by_namespaced_suffix(model, candidates));
+        .or_else(|| find_model_by_namespaced_suffix(model, candidates))
+        .or_else(|| find_model_by_openai_prefix_alias(model, candidates));
     let model_info = if let Some(remote) = remote {
         ModelInfo {
             slug: model.to_string(),
