@@ -2869,6 +2869,24 @@ async fn model_selection_popup_snapshot() {
 }
 
 #[tokio::test]
+async fn model_selection_popup_uses_bundled_entry_for_openai_alias() {
+    let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("openai-gpt-5.4")).await;
+    chat.thread_id = Some(ThreadId::new());
+    chat.open_model_popup();
+
+    let popup = render_bottom_popup(&chat, /*width*/ 80);
+    assert_chatwidget_snapshot!("model_selection_popup_openai_alias", popup);
+    assert!(
+        popup.contains("gpt-5.4"),
+        "expected bundled model slug in picker:\n{popup}"
+    );
+    assert!(
+        !popup.contains("openai-gpt-5.4"),
+        "expected picker to hide openai prefix for bundled model:\n{popup}"
+    );
+}
+
+#[tokio::test]
 async fn personality_selection_popup_snapshot() {
     let (mut chat, _rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
     chat.thread_id = Some(ThreadId::new());
@@ -2926,6 +2944,52 @@ async fn model_picker_hides_show_in_picker_false_models_from_cache() {
     assert!(
         !popup.contains("test-hidden-model"),
         "expected hidden model to be excluded from picker:\n{popup}"
+    );
+}
+
+#[tokio::test]
+async fn model_picker_selection_persists_openai_prefixed_model() {
+    let (mut chat, mut rx, _op_rx) = make_chatwidget_manual(Some("gpt-5.3-codex")).await;
+    let preset = |slug: &str| ModelPreset {
+        id: slug.to_string(),
+        model: slug.to_string(),
+        display_name: slug.to_string(),
+        description: format!("{slug} description"),
+        default_reasoning_effort: ReasoningEffortConfig::Medium,
+        supported_reasoning_efforts: vec![ReasoningEffortPreset {
+            effort: ReasoningEffortConfig::Medium,
+            description: "medium".to_string(),
+        }],
+        supports_personality: false,
+        additional_speed_tiers: Vec::new(),
+        service_tiers: Vec::new(),
+        default_service_tier: None,
+        is_default: false,
+        upgrade: None,
+        show_in_picker: true,
+        availability_nux: None,
+        supported_in_api: true,
+        input_modalities: default_input_modalities(),
+    };
+
+    chat.open_reasoning_popup(preset("gpt-5.4"));
+    chat.handle_key_event(KeyEvent::from(KeyCode::Enter));
+
+    let events = std::iter::from_fn(|| rx.try_recv().ok()).collect::<Vec<_>>();
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::UpdateModel(model) if model == "gpt-5.4"
+        )),
+        "expected runtime model update event; events: {events:?}"
+    );
+    assert!(
+        events.iter().any(|event| matches!(
+            event,
+            AppEvent::PersistModelSelection { model, effort: Some(ReasoningEffortConfig::Medium) }
+                if model == "openai-gpt-5.4"
+        )),
+        "expected persisted openai-prefixed model selection; events: {events:?}"
     );
 }
 

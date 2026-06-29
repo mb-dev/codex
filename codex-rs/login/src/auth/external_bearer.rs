@@ -112,9 +112,38 @@ struct CachedExternalBearerToken {
     fetched_at: Instant,
 }
 
+const AUTH_COMMAND_MAX_ATTEMPTS: u32 = 3;
+const AUTH_COMMAND_RETRY_DELAY: std::time::Duration = std::time::Duration::from_secs(2);
+
 async fn run_provider_auth_command(config: &ModelProviderAuthInfo) -> io::Result<String> {
     let program = resolve_provider_auth_program(&config.command, &config.cwd)?;
-    let mut command = Command::new(&program);
+
+    let mut last_err = None;
+    for attempt in 1..=AUTH_COMMAND_MAX_ATTEMPTS {
+        match run_provider_auth_command_once(config, &program).await {
+            Ok(token) => return Ok(token),
+            Err(err) => {
+                tracing::warn!(
+                    attempt,
+                    max_attempts = AUTH_COMMAND_MAX_ATTEMPTS,
+                    error = %err,
+                    "provider auth command failed; will retry"
+                );
+                last_err = Some(err);
+                if attempt < AUTH_COMMAND_MAX_ATTEMPTS {
+                    tokio::time::sleep(AUTH_COMMAND_RETRY_DELAY).await;
+                }
+            }
+        }
+    }
+    Err(last_err.unwrap())
+}
+
+async fn run_provider_auth_command_once(
+    config: &ModelProviderAuthInfo,
+    program: &std::path::Path,
+) -> io::Result<String> {
+    let mut command = Command::new(program);
     command
         .args(&config.args)
         .current_dir(config.cwd.as_path())
