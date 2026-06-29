@@ -121,6 +121,8 @@ pub struct ModelProviderInfo {
     pub env_http_headers: Option<HashMap<String, String>>,
     /// Maximum number of times to retry a failed HTTP request to this provider.
     pub request_max_retries: Option<u64>,
+    /// Whether to retry HTTP 429 responses from this provider.
+    pub request_retry_429: Option<bool>,
     /// Number of times to retry reconnecting a dropped streaming response before failing.
     pub stream_max_retries: Option<u64>,
     /// Idle timeout (in milliseconds) to wait for activity on a streaming response before treating
@@ -265,7 +267,7 @@ impl ModelProviderInfo {
         let retry = ApiRetryConfig {
             max_attempts: self.request_max_retries(),
             base_delay: Duration::from_millis(200),
-            retry_429: false,
+            retry_429: self.request_retry_429(),
             retry_5xx: true,
             retry_transport: true,
         };
@@ -306,6 +308,11 @@ impl ModelProviderInfo {
         self.request_max_retries
             .unwrap_or(DEFAULT_REQUEST_MAX_RETRIES)
             .min(MAX_REQUEST_MAX_RETRIES)
+    }
+
+    /// Whether request retry should include HTTP 429 responses for this provider.
+    pub fn request_retry_429(&self) -> bool {
+        self.request_retry_429.unwrap_or(false)
     }
 
     /// Effective maximum number of stream reconnection attempts for this provider.
@@ -358,6 +365,7 @@ impl ModelProviderInfo {
             ),
             // Use global defaults for retry/timeout unless overridden in config.toml.
             request_max_retries: None,
+            request_retry_429: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
@@ -392,6 +400,7 @@ impl ModelProviderInfo {
             )])),
             env_http_headers: None,
             request_max_retries: None,
+            request_retry_429: None,
             stream_max_retries: None,
             stream_idle_timeout_ms: None,
             websocket_connect_timeout_ms: None,
@@ -540,6 +549,7 @@ pub fn create_oss_provider_with_base_url(base_url: &str, wire_api: WireApi) -> M
         http_headers: None,
         env_http_headers: None,
         request_max_retries: None,
+        request_retry_429: None,
         stream_max_retries: None,
         stream_idle_timeout_ms: None,
         websocket_connect_timeout_ms: None,
