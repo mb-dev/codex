@@ -123,7 +123,7 @@ pub(super) fn should_show_model_migration_prompt(
     seen_migrations: &BTreeMap<String, String>,
     available_models: &[ModelPreset],
 ) -> bool {
-    if target_model == current_model {
+    if crate::model_alias::same_picker_model(target_model, current_model) {
         return false;
     }
 
@@ -133,17 +133,17 @@ pub(super) fn should_show_model_migration_prompt(
         return false;
     }
 
-    if !available_models
-        .iter()
-        .any(|preset| preset.model == target_model && preset.show_in_picker)
-    {
+    if !available_models.iter().any(|preset| {
+        crate::model_alias::same_picker_model(target_model, preset.model.as_str())
+            && preset.show_in_picker
+    }) {
         return false;
     }
 
-    if available_models
-        .iter()
-        .any(|preset| preset.model == current_model && preset.upgrade.is_some())
-    {
+    if available_models.iter().any(|preset| {
+        crate::model_alias::same_picker_model(current_model, preset.model.as_str())
+            && preset.upgrade.is_some()
+    }) {
         return true;
     }
 
@@ -174,9 +174,10 @@ pub(super) fn target_preset_for_upgrade<'a>(
     available_models: &'a [ModelPreset],
     target_model: &str,
 ) -> Option<&'a ModelPreset> {
-    available_models
-        .iter()
-        .find(|preset| preset.model == target_model && preset.show_in_picker)
+    available_models.iter().find(|preset| {
+        crate::model_alias::same_picker_model(target_model, preset.model.as_str())
+            && preset.show_in_picker
+    })
 }
 
 pub(super) fn apply_accepted_model_migration(
@@ -186,19 +187,26 @@ pub(super) fn apply_accepted_model_migration(
     target_model: String,
     target_default_effort: ReasoningEffortConfig,
 ) {
+    let persisted_target = crate::model_alias::persisted_picker_model(
+        &target_model,
+        crate::model_alias::should_prefix_openai_alias(
+            config.model_provider.is_openai(),
+            config.model.as_deref().unwrap_or(&from_model),
+        ),
+    );
     app_event_tx.send(AppEvent::PersistModelMigrationPromptAcknowledged {
         from_model,
-        to_model: target_model.clone(),
+        to_model: persisted_target.clone(),
     });
 
-    config.model = Some(target_model.clone());
+    config.model = Some(persisted_target.clone());
     config.model_reasoning_effort = Some(target_default_effort.clone());
-    app_event_tx.send(AppEvent::UpdateModel(target_model.clone()));
+    app_event_tx.send(AppEvent::UpdateModel(persisted_target.clone()));
     app_event_tx.send(AppEvent::UpdateReasoningEffort(Some(
         target_default_effort.clone(),
     )));
     app_event_tx.send(AppEvent::PersistModelSelection {
-        model: target_model,
+        model: persisted_target,
         effort: Some(target_default_effort),
     });
 }
@@ -276,9 +284,7 @@ pub(super) async fn handle_model_migration_prompt_if_needed(
     app_event_tx: &AppEventSender,
     available_models: &[ModelPreset],
 ) -> Option<AppExitInfo> {
-    let upgrade = available_models
-        .iter()
-        .find(|preset| preset.model == model)
+    let upgrade = crate::model_alias::find_matching_picker_preset(available_models, model)
         .and_then(|preset| preset.upgrade.as_ref());
 
     if let Some(ModelUpgrade {
@@ -303,15 +309,17 @@ pub(super) async fn handle_model_migration_prompt_if_needed(
             return None;
         }
 
-        let current_preset = available_models.iter().find(|preset| preset.model == model);
+        let current_preset =
+            crate::model_alias::find_matching_picker_preset(available_models, model);
         let target_preset = target_preset_for_upgrade(available_models, &target_model);
         let target_preset = target_preset?;
         let target_display_name = target_preset.display_name.clone();
-        let heading_label = if target_display_name == model {
-            target_model.clone()
-        } else {
-            target_display_name.clone()
-        };
+        let heading_label =
+            if target_display_name == crate::model_alias::canonical_picker_model(model) {
+                target_model.clone()
+            } else {
+                target_display_name.clone()
+            };
         let target_description =
             (!target_preset.description.is_empty()).then(|| target_preset.description.clone());
         let can_opt_out = current_preset.is_some();
