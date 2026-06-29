@@ -554,7 +554,7 @@ async fn plan_reasoning_scope_popup_all_modes_persists_global_and_plan_override(
         events.iter().any(|event| matches!(
             event,
             AppEvent::PersistModelSelection { model, effort: Some(ReasoningEffortConfig::High) }
-                if model == "gpt-5.4"
+                if model == "openai-gpt-5.4"
         )),
         "expected global model reasoning selection persistence; events: {events:?}"
     );
