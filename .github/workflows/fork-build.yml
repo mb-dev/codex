@@ -1,13 +1,15 @@
 name: fork-build
 
 on:
+  push:
+    tags:
+      - "rust-v*"
   workflow_dispatch:
     inputs:
-      official_release_tag:
-        description: "Optional openai/codex release tag to mirror, such as rust-v0.137.0"
-        required: false
+      tag:
+        description: "Existing fork tag to build & publish, such as rust-v0.142.4"
+        required: true
         type: string
-  push:
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
@@ -20,296 +22,65 @@ env:
   CARGO_NET_GIT_FETCH_WITH_CLI: "true"
 
 jobs:
-  official-release:
+  resolve:
     if: github.repository != 'openai/codex'
-    name: Detect official release
+    name: Resolve tag
     runs-on: ubuntu-latest
     outputs:
-      build_sha: ${{ steps.detect.outputs.build_sha }}
-      build_targets: ${{ steps.detect.outputs.build_targets }}
-      has_build_targets: ${{ steps.detect.outputs.has_build_targets }}
-      is_official_release: ${{ steps.detect.outputs.is_official_release }}
-      official_release_url: ${{ steps.detect.outputs.official_release_url }}
-      release_name: ${{ steps.detect.outputs.release_name }}
-      release_tag: ${{ steps.detect.outputs.release_tag }}
-      release_sha: ${{ steps.detect.outputs.release_sha }}
-      release_prerelease: ${{ steps.detect.outputs.release_prerelease }}
+      release_tag: ${{ steps.vars.outputs.release_tag }}
+      build_ref: ${{ steps.vars.outputs.build_ref }}
+      release_name: ${{ steps.vars.outputs.release_name }}
+      prerelease: ${{ steps.vars.outputs.prerelease }}
     steps:
-      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
-        with:
-          fetch-depth: 0
-          persist-credentials: false
-
-      - name: Detect matching official release
-        id: detect
+      - name: Resolve release tag
+        id: vars
         shell: bash
         env:
-          GH_TOKEN: ${{ github.token }}
-          IS_BRANCH_REF: ${{ github.ref_type == 'branch' }}
-          REQUESTED_RELEASE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.official_release_tag || '' }}
+          EVENT_NAME: ${{ github.event_name }}
+          INPUT_TAG: ${{ inputs.tag }}
+          REF_NAME: ${{ github.ref_name }}
         run: |
           set -euo pipefail
-
-          fork_releases_file="${RUNNER_TEMP}/fork-codex-releases.txt"
-          fork_release_assets_file="${RUNNER_TEMP}/fork-codex-release-assets.tsv"
-          fork_tags_file="${RUNNER_TEMP}/fork-codex-tags.tsv"
-          tags_file="${RUNNER_TEMP}/openai-codex-tags.tsv"
-          releases_file="${RUNNER_TEMP}/openai-codex-releases.tsv"
-
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
-            --jq '.[] | select(.draft | not) | .tag_name' \
-            > "$fork_releases_file"
-          gh api --paginate "repos/${GITHUB_REPOSITORY}/releases" \
-            --jq '.[] | select(.draft | not) | [.tag_name, ([.assets[].name] | join(","))] | @tsv' \
-            > "$fork_release_assets_file"
-          git ls-remote --tags "https://github.com/${GITHUB_REPOSITORY}.git" \
-            'refs/tags/rust-v*' > "$fork_tags_file"
-          git ls-remote --tags https://github.com/openai/codex.git 'refs/tags/rust-v*' > "$tags_file"
-          gh api --paginate repos/openai/codex/releases \
-            --jq '.[] | select(.draft | not) | [.tag_name, (.name // .tag_name), (.prerelease | tostring), .html_url] | @tsv' \
-            > "$releases_file"
-
-          python3 - "$tags_file" "$releases_file" "$fork_releases_file" "$fork_release_assets_file" "$fork_tags_file" <<'PY' >> "$GITHUB_OUTPUT"
-          import json
-          import os
-          import subprocess
-          import sys
-
-          (
-              tags_path,
-              releases_path,
-              fork_releases_path,
-              fork_release_assets_path,
-              fork_tags_path,
-          ) = sys.argv[1:]
-          current_sha = os.environ["GITHUB_SHA"]
-          build_sha = current_sha
-          is_branch_ref = os.environ.get("IS_BRANCH_REF") == "true"
-          requested_tag = os.environ.get("REQUESTED_RELEASE_TAG", "").strip()
-          target_builds = [
-              {
-                  "runner": "macos-15",
-                  "target": "aarch64-apple-darwin",
-                  "artifact_name": "codex-aarch64-apple-darwin",
-                  "required_assets": {
-                      "codex-aarch64-apple-darwin.tar.gz",
-                      "codex-aarch64-apple-darwin.zst",
-                      "codex-package-aarch64-apple-darwin.tar.gz",
-                      "codex-package-aarch64-apple-darwin.tar.zst",
-                  },
-              },
-              {
-                  "runner": "ubuntu-24.04",
-                  "target": "x86_64-unknown-linux-musl",
-                  "artifact_name": "codex-x86_64-unknown-linux-musl",
-                  "required_assets": {
-                      "bwrap-x86_64-unknown-linux-musl.tar.gz",
-                      "bwrap-x86_64-unknown-linux-musl.zst",
-                      "codex-package-x86_64-unknown-linux-musl.tar.gz",
-                      "codex-package-x86_64-unknown-linux-musl.tar.zst",
-                      "codex-x86_64-unknown-linux-musl.tar.gz",
-                      "codex-x86_64-unknown-linux-musl.zst",
-                  },
-              },
-              {
-                  "runner": "ubuntu-24.04-arm",
-                  "target": "aarch64-unknown-linux-musl",
-                  "artifact_name": "codex-aarch64-unknown-linux-musl",
-                  "required_assets": {
-                      "bwrap-aarch64-unknown-linux-musl.tar.gz",
-                      "bwrap-aarch64-unknown-linux-musl.zst",
-                      "codex-aarch64-unknown-linux-musl.tar.gz",
-                      "codex-aarch64-unknown-linux-musl.zst",
-                      "codex-package-aarch64-unknown-linux-musl.tar.gz",
-                      "codex-package-aarch64-unknown-linux-musl.tar.zst",
-                  },
-              },
-          ]
-
-          def tag_commit_map(path):
-              peeled = {}
-              unpeeled = {}
-              with open(path, encoding="utf-8") as tags_file:
-                  for line in tags_file:
-                      if not line.strip():
-                          continue
-                      sha, ref = line.rstrip("\n").split("\t", 1)
-                      if not ref.startswith("refs/tags/"):
-                          continue
-
-                      tag = ref.removeprefix("refs/tags/")
-                      if tag.endswith("^{}"):
-                          peeled[tag.removesuffix("^{}")] = sha
-                      else:
-                          unpeeled[tag] = sha
-
-              return {
-                  tag: peeled.get(tag, sha)
-                  for tag, sha in unpeeled.items()
-                  if tag.startswith("rust-v")
-              }
-
-          def is_ancestor(ancestor, descendant):
-              return (
-                  subprocess.run(
-                      [
-                          "git",
-                          "merge-base",
-                          "--is-ancestor",
-                          ancestor,
-                          descendant,
-                      ],
-                      check=False,
-                      stdout=subprocess.DEVNULL,
-                      stderr=subprocess.DEVNULL,
-                  ).returncode
-                  == 0
-              )
-
-          tag_shas = tag_commit_map(tags_path)
-          fork_tag_shas = tag_commit_map(fork_tags_path)
-
-          releases = []
-          with open(releases_path, encoding="utf-8") as releases_file:
-              for line in releases_file:
-                  tag, name, prerelease, url = line.rstrip("\n").split("\t", 3)
-                  if not tag.startswith("rust-v"):
-                      continue
-                  release_sha = tag_shas.get(tag)
-                  if release_sha is None:
-                      continue
-                  releases.append(
-                      {
-                          "tag": tag,
-                          "name": name or tag,
-                          "prerelease": prerelease,
-                          "url": url,
-                          "sha": release_sha,
-                      }
-                  )
-
-          with open(fork_releases_path, encoding="utf-8") as fork_releases_file:
-              fork_release_tags = {
-                  line.strip()
-                  for line in fork_releases_file
-                  if line.strip()
-              }
-
-          fork_release_assets = {}
-          with open(fork_release_assets_path, encoding="utf-8") as fork_release_assets_file:
-              for line in fork_release_assets_file:
-                  tag, asset_names = line.rstrip("\n").split("\t", 1)
-                  if not tag:
-                      continue
-                  fork_release_assets[tag] = {
-                      asset_name for asset_name in asset_names.split(",") if asset_name
-                  }
-
-          def missing_release_targets(tag):
-              release_assets = fork_release_assets.get(tag, set())
-              return [
-                  {
-                      "runner": target_build["runner"],
-                      "target": target_build["target"],
-                      "artifact_name": target_build["artifact_name"],
-                  }
-                  for target_build in target_builds
-                  if tag not in fork_release_tags
-                  or not target_build["required_assets"].issubset(release_assets)
-              ]
-
-          def fork_release_needs_build(tag):
-              if tag not in fork_release_tags:
-                  return True
-              return bool(missing_release_targets(tag))
-
-          selected = None
-          if requested_tag:
-              selected = next(
-                  (release for release in releases if release["tag"] == requested_tag),
-                  None,
-              )
-              if selected is None:
-                  raise SystemExit(
-                      f"{requested_tag} is not a published openai/codex rust release tag"
-                  )
-              requested_build_sha = fork_tag_shas.get(requested_tag, current_sha)
-              if not is_ancestor(selected["sha"], requested_build_sha):
-                  raise SystemExit(
-                      f"{requested_tag} resolves to {selected['sha']}, "
-                      f"which is not an ancestor of fork build commit {requested_build_sha}"
-                  )
-              build_sha = requested_build_sha
-          else:
-              selected = next(
-                  (release for release in releases if release["sha"] == current_sha),
-                  None,
-              )
-              if selected is None and is_branch_ref:
-                  selected = next(
-                      (
-                          release
-                          for release in releases
-                          if fork_release_needs_build(release["tag"])
-                          and is_ancestor(release["sha"], current_sha)
-                      ),
-                      None,
-                  )
-              if selected is not None:
-                  build_sha = fork_tag_shas.get(selected["tag"], current_sha)
-
-          if selected is None:
-              build_targets = []
-              print(f"build_sha={build_sha}")
-              print('build_targets={"include":[]}')
-              print("has_build_targets=false")
-              print("is_official_release=false")
-              print("release_tag=")
-              print("release_name=")
-              print("release_sha=")
-              print("release_prerelease=false")
-              print("official_release_url=")
-          else:
-              build_targets = missing_release_targets(selected["tag"])
-              print(f"build_sha={build_sha}")
-              print(f"build_targets={json.dumps({'include': build_targets})}")
-              print(f"has_build_targets={str(bool(build_targets)).lower()}")
-              print("is_official_release=true")
-              print(f"release_tag={selected['tag']}")
-              print(f"release_name={selected['name']}")
-              print(f"release_sha={selected['sha']}")
-              print(f"release_prerelease={selected['prerelease']}")
-              print(f"official_release_url={selected['url']}")
-          PY
-
-      - name: Summarize release detection
-        shell: bash
-        env:
-          IS_OFFICIAL_RELEASE: ${{ steps.detect.outputs.is_official_release }}
-          RELEASE_TAG: ${{ steps.detect.outputs.release_tag }}
-          RELEASE_SHA: ${{ steps.detect.outputs.release_sha }}
-          BUILD_SHA: ${{ steps.detect.outputs.build_sha }}
-          OFFICIAL_RELEASE_URL: ${{ steps.detect.outputs.official_release_url }}
-        run: |
-          set -euo pipefail
-          if [[ "$IS_OFFICIAL_RELEASE" == "true" ]]; then
-            {
-              echo "Official release: ${RELEASE_TAG}"
-              echo "Official commit: ${RELEASE_SHA}"
-              echo "Fork build commit: ${BUILD_SHA}"
-              echo "Official URL: ${OFFICIAL_RELEASE_URL}"
-            } >> "$GITHUB_STEP_SUMMARY"
+          if [[ "$EVENT_NAME" == "workflow_dispatch" ]]; then
+            tag="$INPUT_TAG"
           else
-            echo "No matching official openai/codex release for ${BUILD_SHA}; release publishing will be skipped." \
-              >> "$GITHUB_STEP_SUMMARY"
+            tag="$REF_NAME"
           fi
 
+          if [[ -z "$tag" ]]; then
+            echo "No tag to build" >&2
+            exit 1
+          fi
+          case "$tag" in
+            rust-v*) ;;
+            *)
+              echo "Tag '$tag' is not a rust-v* release tag" >&2
+              exit 1
+              ;;
+          esac
+
+          name="${tag#rust-v}"
+          case "$tag" in
+            *alpha* | *beta* | *rc*) prerelease=true ;;
+            *) prerelease=false ;;
+          esac
+
+          {
+            echo "release_tag=$tag"
+            echo "build_ref=$tag"
+            echo "release_name=$name"
+            echo "prerelease=$prerelease"
+          } >> "$GITHUB_OUTPUT"
+
+          {
+            echo "Release tag: ${tag}"
+            echo "Release name: ${name}"
+            echo "Prerelease: ${prerelease}"
+          } >> "$GITHUB_STEP_SUMMARY"
+
   build:
-    if: >-
-      github.repository != 'openai/codex' &&
-      needs.official-release.outputs.is_official_release == 'true' &&
-      needs.official-release.outputs.has_build_targets == 'true'
-    needs: official-release
+    if: github.repository != 'openai/codex'
+    needs: resolve
     name: Build ${{ matrix.target }}
     runs-on: ${{ matrix.runner }}
     timeout-minutes: 120
@@ -319,12 +90,22 @@ jobs:
 
     strategy:
       fail-fast: false
-      matrix: ${{ fromJSON(needs.official-release.outputs.build_targets) }}
+      matrix:
+        include:
+          - runner: macos-15
+            target: aarch64-apple-darwin
+            artifact_name: codex-aarch64-apple-darwin
+          - runner: ubuntu-24.04
+            target: x86_64-unknown-linux-musl
+            artifact_name: codex-x86_64-unknown-linux-musl
+          - runner: ubuntu-24.04-arm
+            target: aarch64-unknown-linux-musl
+            artifact_name: codex-aarch64-unknown-linux-musl
 
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
         with:
-          ref: ${{ needs.official-release.outputs.build_sha }}
+          ref: ${{ needs.resolve.outputs.build_ref }}
           persist-credentials: false
 
       - name: Print runner specs
@@ -334,8 +115,7 @@ jobs:
           echo "Runner: ${RUNNER_NAME:-unknown}"
           echo "OS: $(uname -a)"
           echo "Target: ${{ matrix.target }}"
-          echo "Build SHA: ${{ needs.official-release.outputs.build_sha }}"
-          echo "Official release SHA: ${{ needs.official-release.outputs.release_sha }}"
+          echo "Build ref: ${{ needs.resolve.outputs.build_ref }}"
           echo "Disk usage:"
           df -h .
 
@@ -527,13 +307,11 @@ jobs:
           retention-days: 14
 
   publish-release:
-    if: >-
-      github.repository != 'openai/codex' &&
-      needs.official-release.outputs.is_official_release == 'true'
+    if: github.repository != 'openai/codex'
     needs:
-      - official-release
+      - resolve
       - build
-    name: Publish ${{ needs.official-release.outputs.release_tag }}
+    name: Publish ${{ needs.resolve.outputs.release_tag }}
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -545,77 +323,22 @@ jobs:
           path: release-assets
           merge-multiple: true
 
-      - name: Create fork release tag
-        shell: bash
-        env:
-          BUILD_SHA: ${{ needs.official-release.outputs.build_sha }}
-          GH_TOKEN: ${{ github.token }}
-          RELEASE_SHA: ${{ needs.official-release.outputs.release_sha }}
-          RELEASE_TAG: ${{ needs.official-release.outputs.release_tag }}
-        run: |
-          set -euo pipefail
-
-          fork_url="https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.git"
-          existing_tag_commit="$(
-            git ls-remote --tags "$fork_url" \
-              "refs/tags/${RELEASE_TAG}" \
-              "refs/tags/${RELEASE_TAG}^{}" |
-              awk '
-                $2 ~ /\^\{\}$/ { peeled = $1 }
-                $2 !~ /\^\{\}$/ { unpeeled = $1 }
-                END {
-                  if (peeled != "") {
-                    print peeled
-                  } else {
-                    print unpeeled
-                  }
-                }
-              '
-          )"
-
-          if [[ -n "$existing_tag_commit" ]]; then
-            if [[ "$existing_tag_commit" == "$BUILD_SHA" ]]; then
-              exit 0
-            fi
-            if gh release view "$RELEASE_TAG" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
-              echo "Fork release ${RELEASE_TAG} already exists but its tag points to ${existing_tag_commit}, expected ${BUILD_SHA}" >&2
-              exit 1
-            fi
-            echo "Retargeting unpublished fork tag ${RELEASE_TAG} from ${existing_tag_commit} to ${BUILD_SHA}."
-          fi
-
-          tag_dir="${RUNNER_TEMP}/fork-release-tag"
-          git init "$tag_dir"
-          git -C "$tag_dir" fetch --depth=1 --no-tags \
-            "$fork_url" "$BUILD_SHA"
-          git -C "$tag_dir" tag -f "$RELEASE_TAG" "$BUILD_SHA"
-
-          push_args=()
-          if [[ -n "$existing_tag_commit" ]]; then
-            push_args+=(--force)
-          fi
-          git -C "$tag_dir" push "${push_args[@]}" "$fork_url" \
-            "refs/tags/${RELEASE_TAG}"
-
       - name: Create or update release
         shell: bash
         env:
-          BUILD_SHA: ${{ needs.official-release.outputs.build_sha }}
+          BUILD_REF: ${{ needs.resolve.outputs.build_ref }}
           GH_TOKEN: ${{ github.token }}
-          OFFICIAL_RELEASE_URL: ${{ needs.official-release.outputs.official_release_url }}
-          RELEASE_NAME: ${{ needs.official-release.outputs.release_name }}
-          RELEASE_PRERELEASE: ${{ needs.official-release.outputs.release_prerelease }}
-          RELEASE_SHA: ${{ needs.official-release.outputs.release_sha }}
-          RELEASE_TAG: ${{ needs.official-release.outputs.release_tag }}
+          RELEASE_NAME: ${{ needs.resolve.outputs.release_name }}
+          RELEASE_PRERELEASE: ${{ needs.resolve.outputs.prerelease }}
+          RELEASE_TAG: ${{ needs.resolve.outputs.release_tag }}
         run: |
           set -euo pipefail
 
           release_notes="${RUNNER_TEMP}/fork-release-notes.md"
           {
-            printf 'Fork build for official openai/codex release [%s](%s).\n\n' \
-              "$RELEASE_TAG" "$OFFICIAL_RELEASE_URL"
-            printf 'Official release commit: %s\n' "$RELEASE_SHA"
-            printf 'Fork build commit: %s\n' "$BUILD_SHA"
+            printf 'Fork build of openai/codex at tag `%s`.\n\n' "$RELEASE_TAG"
+            printf 'Upstream release: %s/openai/codex/releases/tag/%s\n' \
+              "$GITHUB_SERVER_URL" "$RELEASE_TAG"
             printf 'Workflow run: %s/%s/actions/runs/%s\n\n' \
               "$GITHUB_SERVER_URL" "$GITHUB_REPOSITORY" "$GITHUB_RUN_ID"
             printf 'These are unsigned Codex fork builds for macOS arm64 and Linux x86_64/aarch64 musl.\n'
