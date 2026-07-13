@@ -509,25 +509,6 @@ pub struct ModelMessages {
     pub permissions: Option<PermissionMessages>,
 }
 
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
-pub struct ApprovalMessages {
-    pub on_request: Option<String>,
-    pub on_request_auto_review: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
-pub struct AutoReviewMessages {
-    pub policy: Option<String>,
-    pub policy_template: Option<String>,
-}
-
-#[derive(Debug, Serialize, Deserialize, Clone, PartialEq, Eq, TS, JsonSchema)]
-pub struct PermissionMessages {
-    pub danger_full_access: Option<String>,
-    pub workspace_write: Option<String>,
-    pub read_only: Option<String>,
-}
-
 impl ModelMessages {
     fn has_personality_placeholder(&self) -> bool {
         self.instructions_template
@@ -916,25 +897,6 @@ mod tests {
             auto_review: None,
             permissions: None,
         }));
-
-        let instructions = model.get_model_instructions(Some(Personality::Friendly));
-
-        assert_eq!(instructions, "Hello friendly");
-    }
-
-    #[test]
-    fn get_model_instructions_always_strips_placeholder() {
-        let model = test_model(Some(ModelMessages {
-            instructions_template: Some("Hello\n{{ personality }}".to_string()),
-            instructions_variables: Some(ModelInstructionsVariables {
-                personality_default: None,
-                personality_friendly: Some("friendly".to_string()),
-                personality_pragmatic: None,
-            }),
-            approvals: None,
-            auto_review: None,
-            permissions: None,
-        }));
         assert_eq!(
             model.get_model_instructions(Some(Personality::Friendly)),
             "Hello\nfriendly"
@@ -954,37 +916,6 @@ mod tests {
 
         let model_no_personality = test_model(Some(ModelMessages {
             instructions_template: Some("Hello\n{{ personality }}".to_string()),
-            instructions_variables: Some(ModelInstructionsVariables {
-                personality_default: None,
-                personality_friendly: None,
-                personality_pragmatic: None,
-            }),
-            approvals: None,
-            auto_review: None,
-            permissions: None,
-        }));
-        assert_eq!(
-            model_no_personality.get_model_instructions(Some(Personality::Friendly)),
-            "Hello\n"
-        );
-        assert_eq!(
-            model_no_personality.get_model_instructions(Some(Personality::Pragmatic)),
-            "Hello\n"
-        );
-        assert_eq!(
-            model_no_personality.get_model_instructions(Some(Personality::None)),
-            "Hello\n"
-        );
-        assert_eq!(
-            model_no_personality.get_model_instructions(/*personality*/ None),
-            "Hello\n"
-        );
-    }
-
-    #[test]
-    fn get_model_instructions_falls_back_when_template_is_missing() {
-        let model = test_model(Some(ModelMessages {
-            instructions_template: None,
             instructions_variables: Some(ModelInstructionsVariables {
                 personality_default: None,
                 personality_friendly: None,
