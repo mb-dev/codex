@@ -78,7 +78,9 @@ impl ChatWidget {
         let current_model = self.current_model();
         let current_label = presets
             .iter()
-            .find(|preset| crate::model_alias::same_picker_model(preset.model.as_str(), current_model))
+            .find(|preset| {
+                crate::model_alias::same_picker_model(preset.model.as_str(), current_model)
+            })
             .map(|preset| preset.model.to_string())
             .unwrap_or_else(|| self.model_display_name().to_string());
 
@@ -297,7 +299,8 @@ impl ChatWidget {
     ) {
         // Normalize to the persisted (provider-aliased) form so the live session
         // model matches what gets written to config (see `model_selection_actions`).
-        let model = crate::model_alias::persisted_picker_model(&model, self.should_prefix_openai_alias());
+        let model =
+            crate::model_alias::persisted_picker_model(&model, self.should_prefix_openai_alias());
         let reasoning_phrase = match effort.as_ref() {
             Some(ReasoningEffortConfig::None) => "no reasoning".to_string(),
             Some(selected_effort) => {
@@ -595,10 +598,11 @@ impl ChatWidget {
             };
             let should_prompt_plan_mode_scope = self
                 .should_prompt_plan_mode_reasoning_scope(model_slug.as_str(), Some(effort.clone()));
-            let actions = self.model_selection_actions(
+            let actions = Self::model_selection_actions(
                 model_slug.clone(),
                 Some(effort.clone()),
                 should_prompt_plan_mode_scope,
+                self.should_prefix_openai_alias(),
             );
 
             items.push(SelectionItem {
@@ -677,9 +681,7 @@ impl ChatWidget {
         let model =
             crate::model_alias::persisted_picker_model(&model, self.should_prefix_openai_alias());
         self.apply_model_and_effort_without_persist(model.clone(), effort.clone());
-        self.app_event_tx.send(AppEvent::PersistModelSelection {
-            model,
-            effort,
-        });
+        self.app_event_tx
+            .send(AppEvent::PersistModelSelection { model, effort });
     }
 }
