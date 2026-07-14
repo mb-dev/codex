@@ -3381,16 +3381,12 @@ async fn select_ultra_with_multi_agent_thread_limit(max_threads: usize) -> (bool
 }
 
 #[tokio::test]
-async fn ultra_reasoning_selection_warns_for_high_multi_agent_concurrency() {
+async fn ultra_reasoning_selection_does_not_warn_for_high_multi_agent_concurrency() {
     let (selected_ultra, warnings) =
         select_ultra_with_multi_agent_thread_limit(/*max_threads*/ 8).await;
 
     assert!(selected_ultra);
-    assert_eq!(warnings.len(), 1);
-    assert_chatwidget_snapshot!(
-        "ultra_reasoning_selection_high_multi_agent_concurrency_warning",
-        &warnings[0]
-    );
+    assert_eq!(warnings, Vec::<String>::new());
 }
 
 #[tokio::test]
