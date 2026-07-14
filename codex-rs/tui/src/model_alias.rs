@@ -115,8 +115,7 @@ mod tests {
     fn should_prefix_openai_alias_follows_provider_or_configured_alias() {
         // Native OpenAI provider always prefixes.
         assert!(should_prefix_openai_alias(
-            /*is_openai_provider*/ true,
-            "gpt-5.4"
+            /*is_openai_provider*/ true, "gpt-5.4"
         ));
         // Custom provider (e.g. snowhouse) whose configured model is already aliased.
         assert!(should_prefix_openai_alias(
