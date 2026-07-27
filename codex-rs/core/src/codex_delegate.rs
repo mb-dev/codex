@@ -109,6 +109,7 @@ pub(crate) async fn run_codex_thread_interactive(
         extensions: Arc::clone(&parent_session.services.extensions),
         conversation_history,
         requested_history_mode: None,
+        requested_thread_id: None,
         session_source: SessionSource::SubAgent(subagent_source.clone()),
         forked_from_thread_id,
         parent_thread_id: Some(parent_session.thread_id),

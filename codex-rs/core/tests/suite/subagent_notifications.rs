@@ -801,6 +801,7 @@ async fn subagent_stop_replaces_stop_and_skips_internal_subagents() -> Result<()
             allow_provider_model_fallback: false,
             initial_history: InitialHistory::New,
             history_mode: None,
+            requested_thread_id: None,
             session_source: Some(SessionSource::SubAgent(SubAgentSource::Review)),
             thread_source: None,
             dynamic_tools: Vec::new(),

@@ -1420,6 +1420,7 @@ async fn session_end_skips_subagents() -> Result<()> {
                 allow_provider_model_fallback: false,
                 initial_history: InitialHistory::New,
                 history_mode: None,
+                requested_thread_id: None,
                 session_source: Some(SessionSource::SubAgent(source)),
                 thread_source: None,
                 dynamic_tools: Vec::new(),

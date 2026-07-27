@@ -704,6 +704,7 @@ impl TestCodexBuilder {
                         allow_provider_model_fallback: false,
                         initial_history: InitialHistory::New,
                         history_mode: self.history_mode,
+                        requested_thread_id: None,
                         session_source: None,
                         thread_source: None,
                         dynamic_tools: Vec::new(),

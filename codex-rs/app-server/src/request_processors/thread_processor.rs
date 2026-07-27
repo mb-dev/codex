@@ -4,6 +4,7 @@ use super::*;
 use crate::error_code::method_not_found;
 use codex_app_server_protocol::SelectedCapabilityRoot;
 use codex_extension_api::ExtensionDataInit;
+use codex_protocol::ThreadId;
 use codex_protocol::config_types::MultiAgentMode;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_DANGER_FULL_ACCESS;
 use codex_protocol::models::BUILT_IN_PERMISSION_PROFILE_WORKSPACE;
@@ -14,6 +15,20 @@ const THREAD_LIST_MAX_LIMIT: usize = 100;
 const CODEX_TUI_CLIENT_NAME: &str = "codex-tui";
 const THREAD_ROLLBACK_DEPRECATION_SUMMARY: &str =
     "thread/rollback is deprecated and will be removed soon";
+
+fn parse_requested_thread_id(
+    thread_id: Option<String>,
+) -> Result<Option<ThreadId>, JSONRPCErrorError> {
+    let Some(thread_id) = thread_id else {
+        return Ok(None);
+    };
+    let thread_id = ThreadId::from_string(&thread_id)
+        .map_err(|err| invalid_request(format!("invalid threadId: {err}")))?;
+    if !thread_id.is_v7() {
+        return Err(invalid_request("threadId must be a UUIDv7"));
+    }
+    Ok(Some(thread_id))
+}
 
 struct ThreadListFilters {
     model_providers: Option<Vec<String>>,
@@ -948,6 +963,7 @@ impl ThreadRequestProcessor {
         request_context: RequestContext,
     ) -> Result<(), JSONRPCErrorError> {
         let ThreadStartParams {
+            thread_id,
             model,
             model_provider,
             allow_provider_model_fallback,
@@ -974,6 +990,7 @@ impl ThreadRequestProcessor {
             thread_source,
             environments,
         } = params;
+        let requested_thread_id = parse_requested_thread_id(thread_id)?;
         if matches!(
             history_mode,
             Some(codex_app_server_protocol::ThreadHistoryMode::Paginated)
@@ -1035,6 +1052,7 @@ impl ThreadRequestProcessor {
                 dynamic_tools,
                 selected_capability_roots.unwrap_or_default(),
                 history_mode.map(Into::into),
+                requested_thread_id,
                 session_start_source,
                 thread_source.map(Into::into),
                 environments,
@@ -1112,6 +1130,7 @@ impl ThreadRequestProcessor {
         dynamic_tools: Option<Vec<DynamicToolSpec>>,
         selected_capability_roots: Vec<SelectedCapabilityRoot>,
         history_mode: Option<ThreadHistoryMode>,
+        requested_thread_id: Option<ThreadId>,
         session_start_source: Option<codex_app_server_protocol::ThreadStartSource>,
         thread_source: Option<codex_protocol::protocol::ThreadSource>,
         environment_selections: Option<Vec<TurnEnvironmentSelection>>,
@@ -1246,6 +1265,7 @@ impl ThreadRequestProcessor {
                     codex_app_server_protocol::ThreadStartSource::Clear => InitialHistory::Cleared,
                 },
                 history_mode,
+                requested_thread_id,
                 session_source: None,
                 thread_source,
                 dynamic_tools,
