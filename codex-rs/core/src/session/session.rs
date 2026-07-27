@@ -596,6 +596,7 @@ impl Session {
         agent_status: watch::Sender<AgentStatus>,
         mut initial_history: InitialHistory,
         fork_persistence: ForkPersistence,
+        requested_thread_id: Option<ThreadId>,
         session_source: SessionSource,
         skills_service: Arc<HostSkillsService>,
         plugins_manager: Arc<PluginsManager>,
@@ -665,7 +666,7 @@ impl Session {
 
         let thread_id = match &initial_history {
             InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_) => {
-                agent_control.generate_thread_id()
+                requested_thread_id.unwrap_or_else(|| agent_control.generate_thread_id())
             }
             InitialHistory::Resumed(resumed_history) => resumed_history.conversation_id,
         };

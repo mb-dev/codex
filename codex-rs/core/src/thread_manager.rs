@@ -223,6 +223,7 @@ pub struct StartThreadOptions {
     pub allow_provider_model_fallback: bool,
     pub initial_history: InitialHistory,
     pub history_mode: Option<ThreadHistoryMode>,
+    pub requested_thread_id: Option<ThreadId>,
     pub session_source: Option<SessionSource>,
     pub thread_source: Option<ThreadSource>,
     pub dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
@@ -329,6 +330,7 @@ pub(crate) struct ResumeThreadWithHistoryOptions {
 /// function to require an `Arc<&Self>`.
 pub(crate) struct ThreadManagerState {
     threads: Arc<RwLock<HashMap<ThreadId, Arc<CodexThread>>>>,
+    pending_thread_ids: Arc<RwLock<HashSet<ThreadId>>>,
     thread_created_tx: broadcast::Sender<ThreadId>,
     thread_id_generator: ThreadIdGenerator,
     auth_manager: Arc<AuthManager>,
@@ -350,6 +352,20 @@ pub(crate) struct ThreadManagerState {
     analytics_events_client: Option<AnalyticsEventsClient>,
     // Captures submitted ops for testing purpose when test mode is enabled.
     ops_log: Option<SharedCapturedOps>,
+}
+
+struct RequestedThreadIdReservation {
+    pending_thread_ids: Arc<RwLock<HashSet<ThreadId>>>,
+    thread_id: ThreadId,
+}
+
+impl RequestedThreadIdReservation {
+    async fn release(self) {
+        self.pending_thread_ids
+            .write()
+            .await
+            .remove(&self.thread_id);
+    }
 }
 
 pub fn build_models_manager(
@@ -457,6 +473,7 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                pending_thread_ids: Arc::new(RwLock::new(HashSet::new())),
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
                 models_manager,
@@ -603,6 +620,7 @@ impl ThreadManager {
         Self {
             state: Arc::new(ThreadManagerState {
                 threads: Arc::new(RwLock::new(HashMap::new())),
+                pending_thread_ids: Arc::new(RwLock::new(HashSet::new())),
                 thread_created_tx,
                 thread_id_generator: default_thread_id_generator(),
                 models_manager: create_model_provider(provider, Some(auth_manager.clone()))
@@ -1589,6 +1607,71 @@ impl ThreadManagerState {
         )
     }
 
+    async fn reserve_requested_thread_id(
+        &self,
+        requested_thread_id: Option<ThreadId>,
+        initial_history: &InitialHistory,
+    ) -> CodexResult<Option<RequestedThreadIdReservation>> {
+        let Some(thread_id) = requested_thread_id else {
+            return Ok(None);
+        };
+        if matches!(initial_history, InitialHistory::Resumed(_)) {
+            return Err(CodexErr::InvalidRequest(
+                "requested thread id cannot be used when resuming a thread".to_string(),
+            ));
+        }
+
+        {
+            let mut pending_thread_ids = self.pending_thread_ids.write().await;
+            if pending_thread_ids.contains(&thread_id) {
+                return Err(CodexErr::InvalidRequest(format!(
+                    "thread {thread_id} is already being created"
+                )));
+            }
+            pending_thread_ids.insert(thread_id);
+        }
+        let reservation = RequestedThreadIdReservation {
+            pending_thread_ids: Arc::clone(&self.pending_thread_ids),
+            thread_id,
+        };
+
+        if self.threads.read().await.contains_key(&thread_id) {
+            reservation.release().await;
+            return Err(CodexErr::InvalidRequest(format!(
+                "thread {thread_id} is already running"
+            )));
+        }
+        match self
+            .thread_store
+            .read_thread(ReadThreadParams {
+                thread_id,
+                include_archived: true,
+                include_history: false,
+            })
+            .await
+        {
+            Ok(_) => {
+                reservation.release().await;
+                return Err(CodexErr::InvalidRequest(format!(
+                    "thread {thread_id} already exists"
+                )));
+            }
+            Err(ThreadStoreError::ThreadNotFound {
+                thread_id: missing_thread_id,
+            }) if missing_thread_id == thread_id => {}
+            Err(ThreadStoreError::InvalidRequest { message })
+                if message.starts_with("no rollout found for thread id ") => {}
+            Err(err) => {
+                reservation.release().await;
+                return Err(CodexErr::Fatal(format!(
+                    "failed to check requested thread id {thread_id}: {err}"
+                )));
+            }
+        }
+
+        Ok(Some(reservation))
+    }
+
     /// Spawn a new thread with no history using a provided config.
     pub(crate) async fn spawn_new_thread(
         &self,
@@ -1747,6 +1830,7 @@ impl ThreadManagerState {
             allow_provider_model_fallback,
             initial_history,
             history_mode,
+            requested_thread_id,
             session_source,
             thread_source,
             dynamic_tools,
@@ -1764,6 +1848,107 @@ impl ThreadManagerState {
                 &config.workspace_roots,
             )
         });
+        Box::pin(self.spawn_thread_with_source_and_requested(
+            config,
+            initial_history,
+            history_mode,
+            requested_thread_id,
+            allow_provider_model_fallback,
+            auth_manager,
+            agent_control,
+            session_source,
+            parent_thread_id,
+            forked_from_thread_id,
+            fork_persistence,
+            thread_source,
+            dynamic_tools,
+            metrics_service_name,
+            inherited_environments,
+            inherited_exec_policy,
+            parent_trace,
+            environments,
+            thread_extension_init,
+            client_mcp_extensions,
+            user_shell_override,
+        ))
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub(crate) async fn spawn_thread_with_source(
+        &self,
+        config: Config,
+        initial_history: InitialHistory,
+        history_mode: Option<ThreadHistoryMode>,
+        allow_provider_model_fallback: bool,
+        auth_manager: Arc<AuthManager>,
+        agent_control: AgentControl,
+        session_source: SessionSource,
+        parent_thread_id: Option<ThreadId>,
+        forked_from_thread_id: Option<ThreadId>,
+        fork_persistence: ForkPersistence,
+        thread_source: Option<ThreadSource>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        metrics_service_name: Option<String>,
+        inherited_environments: Option<TurnEnvironmentSnapshot>,
+        inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
+        parent_trace: Option<W3cTraceContext>,
+        environments: Vec<TurnEnvironmentSelection>,
+        thread_extension_init: ExtensionDataInit,
+        client_mcp_extensions: ClientMcpExtensions,
+        user_shell_override: Option<crate::shell::Shell>,
+    ) -> CodexResult<NewThread> {
+        self.spawn_thread_with_source_and_requested(
+            config,
+            initial_history,
+            history_mode,
+            /*requested_thread_id*/ None,
+            allow_provider_model_fallback,
+            auth_manager,
+            agent_control,
+            session_source,
+            parent_thread_id,
+            forked_from_thread_id,
+            fork_persistence,
+            thread_source,
+            dynamic_tools,
+            metrics_service_name,
+            inherited_environments,
+            inherited_exec_policy,
+            parent_trace,
+            environments,
+            thread_extension_init,
+            client_mcp_extensions,
+            user_shell_override,
+        )
+        .await
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn spawn_thread_with_source_and_requested(
+        &self,
+        config: Config,
+        initial_history: InitialHistory,
+        history_mode: Option<ThreadHistoryMode>,
+        requested_thread_id: Option<ThreadId>,
+        allow_provider_model_fallback: bool,
+        auth_manager: Arc<AuthManager>,
+        agent_control: AgentControl,
+        session_source: SessionSource,
+        parent_thread_id: Option<ThreadId>,
+        forked_from_thread_id: Option<ThreadId>,
+        fork_persistence: ForkPersistence,
+        thread_source: Option<ThreadSource>,
+        dynamic_tools: Vec<codex_protocol::dynamic_tools::DynamicToolSpec>,
+        metrics_service_name: Option<String>,
+        inherited_environments: Option<TurnEnvironmentSnapshot>,
+        inherited_exec_policy: Option<Arc<crate::exec_policy::ExecPolicyManager>>,
+        parent_trace: Option<W3cTraceContext>,
+        environments: Vec<TurnEnvironmentSelection>,
+        thread_extension_init: ExtensionDataInit,
+        client_mcp_extensions: ClientMcpExtensions,
+        user_shell_override: Option<crate::shell::Shell>,
+    ) -> CodexResult<NewThread> {
         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
         if let InitialHistory::Resumed(resumed) = &initial_history {
             let mut threads = self.threads.write().await;
@@ -1819,7 +2004,10 @@ impl ThreadManagerState {
             starting.retain(|runtime| runtime.strong_count() != 0);
             starting.push(Arc::downgrade(&source_changed_during_startup));
         }
-        let (session, io) = Box::pin(Session::spawn(SessionSpawnArgs {
+        let requested_thread_id_reservation = self
+            .reserve_requested_thread_id(requested_thread_id, &initial_history)
+            .await?;
+        let session_spawn_result = Box::pin(Session::spawn(SessionSpawnArgs {
             config,
             allow_provider_model_fallback,
             user_instructions,
@@ -1835,6 +2023,7 @@ impl ThreadManagerState {
             conversation_history: initial_history,
             requested_history_mode: history_mode,
             fork_persistence,
+            requested_thread_id,
             session_source,
             forked_from_thread_id,
             parent_thread_id,
@@ -1860,7 +2049,16 @@ impl ThreadManagerState {
             windows_sandbox_proxy_settings_mode:
                 codex_sandboxing::WindowsSandboxProxySettingsMode::Reconcile,
         }))
-        .await?;
+        .await;
+        let (session, io) = match session_spawn_result {
+            Ok(spawned) => spawned,
+            Err(err) => {
+                if let Some(reservation) = requested_thread_id_reservation {
+                    reservation.release().await;
+                }
+                return Err(err);
+            }
+        };
         // Enable Full Access form input only after session startup so a required MCP server cannot
         // block startup while waiting for form input.
         if session
@@ -1872,9 +2070,26 @@ impl ThreadManagerState {
         {
             session.services.mcp_runtime.enable_full_access_form_input();
         }
-        let new_thread = self
+        if let Some(thread_id) = requested_thread_id
+            && let Err(err) = session.try_ensure_rollout_materialized().await
+        {
+            if let Err(shutdown_err) = io.shutdown_and_wait().await {
+                warn!("failed to shut down thread {thread_id} after rollout error: {shutdown_err}");
+            }
+            if let Some(reservation) = requested_thread_id_reservation {
+                reservation.release().await;
+            }
+            return Err(CodexErr::Fatal(format!(
+                "failed to materialize requested thread id {thread_id}: {err}"
+            )));
+        }
+        let new_thread_result = self
             .finalize_thread_spawn(session, io, tracked_session_source)
-            .await?;
+            .await;
+        if let Some(reservation) = requested_thread_id_reservation {
+            reservation.release().await;
+        }
+        let new_thread = new_thread_result?;
         if source_changed_during_startup.load(Ordering::Acquire) {
             new_thread.thread.session.request_mcp_runtime_refresh();
         }
