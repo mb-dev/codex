@@ -4489,6 +4489,24 @@ fn thread_start_params_preserve_explicit_null_service_tier() {
 }
 
 #[test]
+fn thread_start_params_round_trip_thread_id() {
+    let thread_id = "0198f6dd-725c-7f0e-9bf8-0d2d45eaa111";
+    let params: ThreadStartParams = serde_json::from_value(json!({ "threadId": thread_id }))
+        .expect("params should deserialize");
+    assert_eq!(params.thread_id.as_deref(), Some(thread_id));
+
+    let serialized = serde_json::to_value(&params).expect("params should serialize");
+    assert_eq!(serialized.get("threadId"), Some(&json!(thread_id)));
+
+    let serialized_without_thread_id =
+        serde_json::to_value(ThreadStartParams::default()).expect("params should serialize");
+    assert_eq!(
+        serialized_without_thread_id.get("threadId"),
+        Some(&serde_json::Value::Null)
+    );
+}
+
+#[test]
 fn thread_lifecycle_responses_default_missing_optional_fields() {
     let response = json!({
         "thread": {

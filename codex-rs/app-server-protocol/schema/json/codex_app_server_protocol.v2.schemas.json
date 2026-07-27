@@ -19709,6 +19709,13 @@
             }
           ]
         },
+        "threadId": {
+          "description": "Optional client-requested thread id. Must be a UUIDv7 when supplied.",
+          "type": [
+            "string",
+            "null"
+          ]
+        },
         "threadSource": {
           "anyOf": [
             {

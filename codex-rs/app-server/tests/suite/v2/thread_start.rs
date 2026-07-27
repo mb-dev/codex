@@ -25,7 +25,11 @@ use codex_app_server_protocol::SandboxPolicy;
 use codex_app_server_protocol::ServerNotification;
 use codex_app_server_protocol::TextPosition;
 use codex_app_server_protocol::TextRange;
+use codex_app_server_protocol::ThreadArchiveParams;
+use codex_app_server_protocol::ThreadArchiveResponse;
 use codex_app_server_protocol::ThreadHistoryMode;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
 use codex_app_server_protocol::ThreadSource;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
@@ -54,6 +58,7 @@ use std::path::PathBuf;
 use tempfile::TempDir;
 use tokio::net::TcpListener;
 use tokio::sync::oneshot;
+use tokio::time::sleep;
 use tokio::time::timeout;
 use wiremock::Mock;
 use wiremock::MockServer;
@@ -467,6 +472,236 @@ async fn thread_start_creates_thread_and_emits_started() -> Result<()> {
     let started: ThreadStartedNotification =
         serde_json::from_value(notif.params.expect("params must be present"))?;
     assert_eq!(started.thread, thread);
+
+    Ok(())
+}
+
+#[tokio::test]
+async fn thread_start_accepts_client_requested_uuidv7_thread_id() -> Result<()> {
+    let server = create_mock_responses_server_repeating_assistant("Done").await;
+    let codex_home = TempDir::new()?;
+    create_config_toml_without_approval_policy(codex_home.path(), &server.uri())?;
+    let mut mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, mcp.initialize()).await??;
+
+    let requested_thread_id = uuid::Uuid::now_v7().to_string();
+    let request_id = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            thread_id: Some(requested_thread_id.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let response = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(request_id)),
+    )
+    .await??;
+    let ThreadStartResponse { thread, .. } = to_response(response)?;
+    assert_eq!(thread.id, requested_thread_id);
+    assert_eq!(thread.session_id, requested_thread_id);
+    let rollout_path = thread
+        .path
+        .clone()
+        .context("thread should report rollout path")?;
+    assert!(
+        rollout_path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.contains(requested_thread_id.as_str()))
+    );
+
+    let resume_request_id = mcp
+        .send_thread_resume_request(ThreadResumeParams {
+            thread_id: requested_thread_id.clone(),
+            exclude_turns: true,
+            ..Default::default()
+        })
+        .await?;
+    let resume_response = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(resume_request_id)),
+    )
+    .await??;
+    let ThreadResumeResponse {
+        thread: resumed, ..
+    } = to_response(resume_response)?;
+    assert_eq!(resumed.id, requested_thread_id);
+
+    let completed = mcp
+        .start_turn_and_wait_for_completion(TurnStartParams {
+            thread_id: requested_thread_id.clone(),
+            input: vec![V2UserInput::Text {
+                text: "run one turn".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })
+        .await?;
+    assert_eq!(completed.thread_id, requested_thread_id);
+
+    wait_for_existing_path(rollout_path.as_path()).await?;
+    let rollout_contents = std::fs::read_to_string(&rollout_path)?;
+    assert!(rollout_contents.contains(requested_thread_id.as_str()));
+    assert_eq!(
+        wait_for_rollout_paths_with_id(codex_home.path(), requested_thread_id.as_str())
+            .await?
+            .len(),
+        1
+    );
+
+    let malformed_request_id = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            thread_id: Some("not-a-uuid".to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let malformed_error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(malformed_request_id)),
+    )
+    .await??;
+    assert_eq!(malformed_error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert!(
+        malformed_error
+            .error
+            .message
+            .starts_with("invalid threadId:")
+    );
+
+    let uuid_v4 = "67e55044-10b1-426f-9247-bb680e5fe0c8";
+    let uuid_v4_request_id = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            thread_id: Some(uuid_v4.to_string()),
+            ..Default::default()
+        })
+        .await?;
+    let uuid_v4_error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(uuid_v4_request_id)),
+    )
+    .await??;
+    assert_eq!(uuid_v4_error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(uuid_v4_error.error.message, "threadId must be a UUIDv7");
+
+    let duplicate_request_id = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            thread_id: Some(requested_thread_id.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let duplicate_error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_error_message(RequestId::Integer(duplicate_request_id)),
+    )
+    .await??;
+    assert_eq!(duplicate_error.error.code, INVALID_REQUEST_ERROR_CODE);
+    assert_eq!(
+        duplicate_error.error.message,
+        format!("thread {requested_thread_id} is already running")
+    );
+    assert_eq!(
+        wait_for_rollout_paths_with_id(codex_home.path(), requested_thread_id.as_str())
+            .await?
+            .len(),
+        1
+    );
+
+    let generated_request_id = mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams::default())
+        .await?;
+    let generated_response = timeout(
+        DEFAULT_READ_TIMEOUT,
+        mcp.read_stream_until_response_message(RequestId::Integer(generated_request_id)),
+    )
+    .await??;
+    let ThreadStartResponse {
+        thread: generated, ..
+    } = to_response(generated_response)?;
+    let generated_uuid = uuid::Uuid::parse_str(&generated.id)?;
+    assert_eq!(generated_uuid.get_version(), Some(uuid::Version::SortRand));
+
+    drop(mcp);
+
+    let mut restarted_mcp = TestAppServer::builder()
+        .with_codex_home(codex_home.path())
+        .build()
+        .await?;
+    timeout(DEFAULT_READ_TIMEOUT, restarted_mcp.initialize()).await??;
+    let persisted_duplicate_request_id = restarted_mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            thread_id: Some(requested_thread_id.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let persisted_duplicate_error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        restarted_mcp
+            .read_stream_until_error_message(RequestId::Integer(persisted_duplicate_request_id)),
+    )
+    .await??;
+    assert_eq!(
+        persisted_duplicate_error.error.code,
+        INVALID_REQUEST_ERROR_CODE
+    );
+    assert_eq!(
+        persisted_duplicate_error.error.message,
+        format!("thread {requested_thread_id} already exists")
+    );
+    assert_eq!(
+        wait_for_rollout_paths_with_id(codex_home.path(), requested_thread_id.as_str())
+            .await?
+            .len(),
+        1
+    );
+
+    let archive_request_id = restarted_mcp
+        .send_thread_archive_request(ThreadArchiveParams {
+            thread_id: requested_thread_id.clone(),
+        })
+        .await?;
+    let archive_response = timeout(
+        DEFAULT_READ_TIMEOUT,
+        restarted_mcp.read_stream_until_response_message(RequestId::Integer(archive_request_id)),
+    )
+    .await??;
+    let _: ThreadArchiveResponse = to_response(archive_response)?;
+    timeout(
+        DEFAULT_READ_TIMEOUT,
+        restarted_mcp.read_stream_until_notification_message("thread/archived"),
+    )
+    .await??;
+    assert_eq!(
+        rollout_paths_with_id(codex_home.path(), requested_thread_id.as_str())?.len(),
+        0
+    );
+
+    let archived_duplicate_request_id = restarted_mcp
+        .send_thread_start_request_with_auto_env(ThreadStartParams {
+            thread_id: Some(requested_thread_id.clone()),
+            ..Default::default()
+        })
+        .await?;
+    let archived_duplicate_error = timeout(
+        DEFAULT_READ_TIMEOUT,
+        restarted_mcp
+            .read_stream_until_error_message(RequestId::Integer(archived_duplicate_request_id)),
+    )
+    .await??;
+    assert_eq!(
+        archived_duplicate_error.error.code,
+        INVALID_REQUEST_ERROR_CODE
+    );
+    assert_eq!(
+        archived_duplicate_error.error.message,
+        format!("thread {requested_thread_id} already exists")
+    );
+    assert_eq!(
+        rollout_paths_with_id(codex_home.path(), requested_thread_id.as_str())?.len(),
+        0
+    );
 
     Ok(())
 }
@@ -1792,6 +2027,57 @@ fn create_config_toml_without_approval_policy(
     server_uri: &str,
 ) -> std::io::Result<()> {
     create_config_toml(codex_home, server_uri, "sandbox_mode = \"read-only\"", "")
+}
+
+async fn wait_for_rollout_paths_with_id(
+    codex_home: &Path,
+    thread_id: &str,
+) -> Result<Vec<PathBuf>> {
+    for _ in 0..50 {
+        let paths = rollout_paths_with_id(codex_home, thread_id)?;
+        if !paths.is_empty() {
+            return Ok(paths);
+        }
+        sleep(std::time::Duration::from_millis(20)).await;
+    }
+    rollout_paths_with_id(codex_home, thread_id)
+}
+
+async fn wait_for_existing_path(path: &Path) -> Result<()> {
+    for _ in 0..50 {
+        if path.exists() {
+            return Ok(());
+        }
+        sleep(std::time::Duration::from_millis(20)).await;
+    }
+    anyhow::bail!("timed out waiting for path to exist: {}", path.display())
+}
+
+fn rollout_paths_with_id(codex_home: &Path, thread_id: &str) -> Result<Vec<PathBuf>> {
+    fn visit(dir: &Path, thread_id: &str, paths: &mut Vec<PathBuf>) -> Result<()> {
+        if !dir.exists() {
+            return Ok(());
+        }
+        for entry in std::fs::read_dir(dir)? {
+            let entry = entry?;
+            let path = entry.path();
+            if path.is_dir() {
+                visit(path.as_path(), thread_id, paths)?;
+            } else if path
+                .file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.contains(thread_id))
+            {
+                paths.push(path);
+            }
+        }
+        Ok(())
+    }
+
+    let mut paths = Vec::new();
+    visit(codex_home.join("sessions").as_path(), thread_id, &mut paths)?;
+    paths.sort();
+    Ok(paths)
 }
 
 fn create_config_toml(

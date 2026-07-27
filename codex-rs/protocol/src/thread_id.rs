@@ -43,6 +43,10 @@ impl ThreadId {
             uuid: Uuid::parse_str(s)?,
         })
     }
+
+    pub fn is_v7(&self) -> bool {
+        self.uuid.get_version() == Some(uuid::Version::SortRand)
+    }
 }
 
 impl TryFrom<&str> for ThreadId {

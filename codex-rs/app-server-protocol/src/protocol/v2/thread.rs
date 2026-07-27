@@ -57,6 +57,9 @@ pub enum ThreadStartSource {
 #[serde(rename_all = "camelCase")]
 #[ts(export_to = "v2/")]
 pub struct ThreadStartParams {
+    /// Optional client-requested thread id. Must be a UUIDv7 when supplied.
+    #[ts(optional = nullable)]
+    pub thread_id: Option<String>,
     #[ts(optional = nullable)]
     pub model: Option<String>,
     #[ts(optional = nullable)]
