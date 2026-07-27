@@ -117,6 +117,7 @@ pub(crate) async fn run_codex_thread_interactive(
         conversation_history,
         requested_history_mode: None,
         fork_persistence: ForkPersistence::Copied,
+        requested_thread_id: None,
         session_source: SessionSource::SubAgent(subagent_source.clone()),
         forked_from_thread_id,
         parent_thread_id: Some(parent_session.thread_id),
