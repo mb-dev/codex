@@ -535,6 +535,21 @@ client_request_definitions! {
         serialization: thread_id(params.thread_id),
         response: v2::ThreadUnsubscribeResponse,
     },
+    ThreadServerRequestList => "thread/serverRequest/list" {
+        params: v2::ThreadServerRequestListParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadServerRequestListResponse,
+    },
+    ThreadServerRequestRespond => "thread/serverRequest/respond" {
+        params: v2::ThreadServerRequestRespondParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadServerRequestRespondResponse,
+    },
+    ThreadServerRequestReject => "thread/serverRequest/reject" {
+        params: v2::ThreadServerRequestRejectParams,
+        serialization: thread_id(params.thread_id),
+        response: v2::ThreadServerRequestRejectResponse,
+    },
     #[experimental("thread/increment_elicitation")]
     /// Increment the thread-local out-of-band elicitation counter.
     ///

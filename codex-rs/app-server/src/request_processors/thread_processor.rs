@@ -904,6 +904,54 @@ impl ThreadRequestProcessor {
             .map(|response| Some(response.into()))
     }
 
+    pub(crate) async fn thread_server_request_list(
+        &self,
+        params: ThreadServerRequestListParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let thread_id = ThreadId::from_string(&params.thread_id)
+            .map_err(|err| invalid_request(format!("invalid threadId: {err}")))?;
+        let requests = self.outgoing.pending_requests_for_thread(thread_id).await;
+        Ok(Some(ThreadServerRequestListResponse { requests }.into()))
+    }
+
+    pub(crate) async fn thread_server_request_respond(
+        &self,
+        params: ThreadServerRequestRespondParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let thread_id = ThreadId::from_string(&params.thread_id)
+            .map_err(|err| invalid_request(format!("invalid threadId: {err}")))?;
+        let request_id = params.request_id;
+        if !self
+            .outgoing
+            .notify_thread_client_response(thread_id, request_id.clone(), params.response)
+            .await
+        {
+            return Err(invalid_request(format!(
+                "pending server request not found for thread: {request_id}"
+            )));
+        }
+        Ok(Some(ThreadServerRequestRespondResponse {}.into()))
+    }
+
+    pub(crate) async fn thread_server_request_reject(
+        &self,
+        params: ThreadServerRequestRejectParams,
+    ) -> Result<Option<ClientResponsePayload>, JSONRPCErrorError> {
+        let thread_id = ThreadId::from_string(&params.thread_id)
+            .map_err(|err| invalid_request(format!("invalid threadId: {err}")))?;
+        let request_id = params.request_id;
+        if !self
+            .outgoing
+            .notify_thread_client_error(thread_id, request_id.clone(), params.error)
+            .await
+        {
+            return Err(invalid_request(format!(
+                "pending server request not found for thread: {request_id}"
+            )));
+        }
+        Ok(Some(ThreadServerRequestRejectResponse {}.into()))
+    }
+
     pub(crate) async fn conversation_summary(
         &self,
         params: GetConversationSummaryParams,

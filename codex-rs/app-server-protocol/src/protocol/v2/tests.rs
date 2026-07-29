@@ -1311,6 +1311,80 @@ fn thread_shell_command_response_round_trip() {
 }
 
 #[test]
+fn thread_server_request_methods_round_trip() {
+    let list_request = crate::ClientRequest::ThreadServerRequestList {
+        request_id: crate::RequestId::Integer(1),
+        params: ThreadServerRequestListParams {
+            thread_id: "thread-1".to_string(),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&list_request).expect("serialize thread/serverRequest/list"),
+        json!({
+            "method": "thread/serverRequest/list",
+            "id": 1,
+            "params": {
+                "threadId": "thread-1"
+            }
+        })
+    );
+
+    let respond_request = crate::ClientRequest::ThreadServerRequestRespond {
+        request_id: crate::RequestId::Integer(2),
+        params: ThreadServerRequestRespondParams {
+            thread_id: "thread-1".to_string(),
+            request_id: crate::RequestId::Integer(9),
+            response: json!({ "decision": "accept" }),
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&respond_request).expect("serialize thread/serverRequest/respond"),
+        json!({
+            "method": "thread/serverRequest/respond",
+            "id": 2,
+            "params": {
+                "threadId": "thread-1",
+                "requestId": 9,
+                "response": {
+                    "decision": "accept"
+                }
+            }
+        })
+    );
+
+    let reject_request = crate::ClientRequest::ThreadServerRequestReject {
+        request_id: crate::RequestId::Integer(3),
+        params: ThreadServerRequestRejectParams {
+            thread_id: "thread-1".to_string(),
+            request_id: crate::RequestId::Integer(9),
+            error: crate::JSONRPCErrorError {
+                code: -32000,
+                data: Some(json!({ "kind": "clientGone" })),
+                message: "client rejected request".to_string(),
+            },
+        },
+    };
+    assert_eq!(
+        serde_json::to_value(&reject_request).expect("serialize thread/serverRequest/reject"),
+        json!({
+            "method": "thread/serverRequest/reject",
+            "id": 3,
+            "params": {
+                "threadId": "thread-1",
+                "requestId": 9,
+                "error": {
+                    "code": -32000,
+                    "data": {
+                        "kind": "clientGone"
+                    },
+                    "message": "client rejected request"
+                }
+            }
+        })
+    );
+}
+
+#[test]
 fn fs_changed_notification_round_trips() {
     let notification = FsChangedNotification {
         watch_id: "0195ec6b-1d6f-7c2e-8c7a-56f2c4a8b9d1".to_string(),
