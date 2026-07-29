@@ -245,6 +245,7 @@ impl StartThreadOptions {
             allow_provider_model_fallback: false,
             initial_history: InitialHistory::New,
             history_mode: None,
+            requested_thread_id: None,
             session_source: None,
             thread_source: None,
             dynamic_tools: Vec::new(),
