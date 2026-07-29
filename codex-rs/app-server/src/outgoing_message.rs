@@ -411,6 +411,60 @@ impl OutgoingMessageSender {
         }
     }
 
+    pub(crate) async fn notify_thread_client_response(
+        &self,
+        thread_id: ThreadId,
+        id: RequestId,
+        result: Result,
+    ) -> bool {
+        let entry = self.take_thread_request_callback(thread_id, &id).await;
+
+        match entry {
+            Some((id, entry)) => {
+                let completed_at_ms = now_unix_timestamp_ms();
+                if let Ok(response) = entry.request.response_from_result(result.clone())
+                    && !matches!(response, ServerResponse::PermissionsRequestApproval { .. })
+                {
+                    self.analytics_events_client
+                        .track_server_response(completed_at_ms, response);
+                }
+                if let Err(err) = entry.callback.send(Ok(result)) {
+                    warn!("could not notify callback for {id:?} due to: {err:?}");
+                }
+                true
+            }
+            None => {
+                warn!("could not find thread-scoped callback for {id:?}");
+                false
+            }
+        }
+    }
+
+    pub(crate) async fn notify_thread_client_error(
+        &self,
+        thread_id: ThreadId,
+        id: RequestId,
+        error: JSONRPCErrorError,
+    ) -> bool {
+        let entry = self.take_thread_request_callback(thread_id, &id).await;
+
+        match entry {
+            Some((id, entry)) => {
+                warn!("client responded with error for {id:?}: {error:?}");
+                self.analytics_events_client
+                    .track_server_request_aborted(now_unix_timestamp_ms(), id.clone());
+                if let Err(err) = entry.callback.send(Err(error)) {
+                    warn!("could not notify callback for {id:?} due to: {err:?}");
+                }
+                true
+            }
+            None => {
+                warn!("could not find thread-scoped callback for {id:?}");
+                false
+            }
+        }
+    }
+
     pub(crate) async fn cancel_request(&self, id: &RequestId) -> bool {
         let entry = self.take_request_callback(id).await;
         if let Some((request_id, _entry)) = entry {
@@ -449,6 +503,22 @@ impl OutgoingMessageSender {
     ) -> Option<(RequestId, PendingCallbackEntry)> {
         let mut request_id_to_callback = self.request_id_to_callback.lock().await;
         request_id_to_callback.remove_entry(id)
+    }
+
+    async fn take_thread_request_callback(
+        &self,
+        thread_id: ThreadId,
+        id: &RequestId,
+    ) -> Option<(RequestId, PendingCallbackEntry)> {
+        let mut request_id_to_callback = self.request_id_to_callback.lock().await;
+        let matches_thread = request_id_to_callback
+            .get(id)
+            .is_some_and(|entry| entry.thread_id.as_ref() == Some(&thread_id));
+        if matches_thread {
+            request_id_to_callback.remove_entry(id)
+        } else {
+            None
+        }
     }
 
     pub(crate) async fn pending_requests_for_thread(
@@ -1281,6 +1351,117 @@ mod tests {
         outgoing.connection_closed(ConnectionId(9)).await;
 
         assert_eq!(outgoing.request_context_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn connection_closed_keeps_thread_scoped_pending_server_requests() {
+        let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let thread_id = ThreadId::new();
+
+        let (request_id, _wait_for_result) = outgoing
+            .send_request_to_connections(
+                Some(&[ConnectionId(9)]),
+                ServerRequestPayload::CommandExecutionRequestApproval(
+                    CommandExecutionRequestApprovalParams {
+                        thread_id: thread_id.to_string(),
+                        turn_id: "turn-1".to_string(),
+                        item_id: "item-1".to_string(),
+                        started_at_ms: 0,
+                        approval_id: None,
+                        environment_id: None,
+                        reason: None,
+                        network_approval_context: None,
+                        command: Some("python3 -c 'print(42)'".to_string()),
+                        cwd: None,
+                        command_actions: None,
+                        additional_permissions: None,
+                        proposed_execpolicy_amendment: None,
+                        proposed_network_policy_amendments: None,
+                        available_decisions: None,
+                    },
+                ),
+                Some(thread_id),
+            )
+            .await;
+
+        outgoing.connection_closed(ConnectionId(9)).await;
+
+        let requests = outgoing.pending_requests_for_thread(thread_id).await;
+        assert_eq!(requests.len(), 1);
+        assert_eq!(requests[0].id(), &request_id);
+    }
+
+    #[tokio::test]
+    async fn thread_scoped_response_resolves_matching_pending_server_request() {
+        let (tx, _rx) = mpsc::channel::<OutgoingEnvelope>(4);
+        let outgoing =
+            OutgoingMessageSender::new(tx, codex_analytics::AnalyticsEventsClient::disabled());
+        let thread_id = ThreadId::new();
+        let other_thread_id = ThreadId::new();
+
+        let (request_id, wait_for_result) = outgoing
+            .send_request_to_connections(
+                Some(&[ConnectionId(9)]),
+                ServerRequestPayload::CommandExecutionRequestApproval(
+                    CommandExecutionRequestApprovalParams {
+                        thread_id: thread_id.to_string(),
+                        turn_id: "turn-1".to_string(),
+                        item_id: "item-1".to_string(),
+                        started_at_ms: 0,
+                        approval_id: None,
+                        environment_id: None,
+                        reason: None,
+                        network_approval_context: None,
+                        command: Some("python3 -c 'print(42)'".to_string()),
+                        cwd: None,
+                        command_actions: None,
+                        additional_permissions: None,
+                        proposed_execpolicy_amendment: None,
+                        proposed_network_policy_amendments: None,
+                        available_decisions: None,
+                    },
+                ),
+                Some(thread_id),
+            )
+            .await;
+
+        assert!(
+            !outgoing
+                .notify_thread_client_response(
+                    other_thread_id,
+                    request_id.clone(),
+                    json!({ "decision": "accept" }),
+                )
+                .await
+        );
+        assert_eq!(
+            outgoing.pending_requests_for_thread(thread_id).await.len(),
+            1
+        );
+
+        assert!(
+            outgoing
+                .notify_thread_client_response(
+                    thread_id,
+                    request_id,
+                    json!({ "decision": "accept" }),
+                )
+                .await
+        );
+        let result = timeout(Duration::from_secs(1), wait_for_result)
+            .await
+            .expect("waiter should resolve")
+            .expect("callback should send result")
+            .expect("client response should be successful");
+        assert_eq!(result, json!({ "decision": "accept" }));
+        assert!(
+            outgoing
+                .pending_requests_for_thread(thread_id)
+                .await
+                .is_empty()
+        );
     }
 
     #[tokio::test]

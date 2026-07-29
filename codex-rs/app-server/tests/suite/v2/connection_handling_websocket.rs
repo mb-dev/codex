@@ -2,23 +2,36 @@ use anyhow::Context;
 use anyhow::Result;
 use anyhow::bail;
 use app_test_support::DISABLE_PLUGIN_STARTUP_TASKS_ARG;
+use app_test_support::create_final_assistant_message_sse_response;
 use app_test_support::create_mock_responses_server_sequence_unchecked;
+use app_test_support::create_shell_command_sse_response;
 use app_test_support::to_response;
 use base64::Engine;
 use base64::engine::general_purpose::URL_SAFE_NO_PAD;
+use codex_app_server_protocol::AskForApproval;
 use codex_app_server_protocol::ClientInfo;
+use codex_app_server_protocol::CommandExecutionApprovalDecision;
+use codex_app_server_protocol::CommandExecutionRequestApprovalResponse;
 use codex_app_server_protocol::ConfigWarningNotification;
 use codex_app_server_protocol::InitializeParams;
+use codex_app_server_protocol::ItemCompletedNotification;
 use codex_app_server_protocol::JSONRPCError;
 use codex_app_server_protocol::JSONRPCMessage;
 use codex_app_server_protocol::JSONRPCNotification;
 use codex_app_server_protocol::JSONRPCRequest;
 use codex_app_server_protocol::JSONRPCResponse;
 use codex_app_server_protocol::RequestId;
+use codex_app_server_protocol::ServerRequest;
+use codex_app_server_protocol::ThreadItem;
 use codex_app_server_protocol::ThreadLoadedListParams;
 use codex_app_server_protocol::ThreadLoadedListResponse;
+use codex_app_server_protocol::ThreadResumeParams;
+use codex_app_server_protocol::ThreadResumeResponse;
+use codex_app_server_protocol::ThreadServerRequestListResponse;
 use codex_app_server_protocol::ThreadStartParams;
 use codex_app_server_protocol::ThreadStartResponse;
+use codex_app_server_protocol::TurnStartParams;
+use codex_app_server_protocol::UserInput;
 use codex_core::config::set_project_trust_level;
 use codex_protocol::config_types::TrustLevel;
 use futures::SinkExt;
@@ -199,6 +212,166 @@ async fn thread_start_routes_project_exec_policy_warning_to_requester() -> Resul
         Ok(Err(err)) => return Err(err),
         Err(_) => {}
     }
+
+    process
+        .kill()
+        .await
+        .context("failed to stop websocket app-server process")?;
+    Ok(())
+}
+
+#[tokio::test]
+async fn pending_server_request_can_be_listed_and_answered_after_reconnect() -> Result<()> {
+    let approval_command = if cfg!(windows) {
+        vec![
+            "powershell".to_string(),
+            "-Command".to_string(),
+            "Remove-Item -Force $env:TEMP\\codex-pending-request-test-nonexistent -ErrorAction SilentlyContinue; Write-Output 42".to_string(),
+        ]
+    } else {
+        vec![
+            "sh".to_string(),
+            "-c".to_string(),
+            "rm -f /tmp/codex-pending-request-test-nonexistent; printf 42".to_string(),
+        ]
+    };
+    let responses = vec![
+        create_final_assistant_message_sse_response("seeded")?,
+        create_shell_command_sse_response(
+            approval_command,
+            /*workdir*/ None,
+            Some(5000),
+            "call-1",
+        )?,
+        create_final_assistant_message_sse_response("done")?,
+    ];
+    let server = create_mock_responses_server_sequence_unchecked(responses).await;
+    let codex_home = TempDir::new()?;
+    create_config_toml(codex_home.path(), &server.uri(), "never")?;
+    let project = TempDir::new()?;
+
+    let (mut process, bind_addr) = spawn_websocket_server(codex_home.path()).await?;
+    let mut first_client = connect_websocket(bind_addr).await?;
+    send_initialize_request(&mut first_client, /*id*/ 1, "first_client").await?;
+    read_response_for_id(&mut first_client, /*id*/ 1).await?;
+
+    send_request(
+        &mut first_client,
+        "thread/start",
+        /*id*/ 2,
+        Some(serde_json::to_value(ThreadStartParams {
+            cwd: Some(project.path().display().to_string()),
+            model: Some("gpt-5.4".to_string()),
+            ..Default::default()
+        })?),
+    )
+    .await?;
+    let start_response = read_response_for_id(&mut first_client, /*id*/ 2).await?;
+    let ThreadStartResponse { thread, .. } = to_response(start_response)?;
+
+    send_request(
+        &mut first_client,
+        "turn/start",
+        /*id*/ 3,
+        Some(serde_json::to_value(TurnStartParams {
+            thread_id: thread.id.clone(),
+            client_user_message_id: None,
+            input: vec![UserInput::Text {
+                text: "seed history".to_string(),
+                text_elements: Vec::new(),
+            }],
+            ..Default::default()
+        })?),
+    )
+    .await?;
+    read_response_for_id(&mut first_client, /*id*/ 3).await?;
+    read_notification_for_method(&mut first_client, "turn/completed").await?;
+
+    send_request(
+        &mut first_client,
+        "turn/start",
+        /*id*/ 4,
+        Some(serde_json::to_value(TurnStartParams {
+            thread_id: thread.id.clone(),
+            client_user_message_id: None,
+            input: vec![UserInput::Text {
+                text: "run a command".to_string(),
+                text_elements: Vec::new(),
+            }],
+            approval_policy: Some(AskForApproval::OnRequest),
+            ..Default::default()
+        })?),
+    )
+    .await?;
+    let (_, original_request) =
+        read_response_and_server_request(&mut first_client, /*id*/ 4).await?;
+    let ServerRequest::CommandExecutionRequestApproval { .. } = &original_request else {
+        bail!("expected command execution approval request, got {original_request:?}");
+    };
+
+    first_client.close(None).await?;
+    drop(first_client);
+
+    let mut second_client = connect_websocket(bind_addr).await?;
+    send_initialize_request(&mut second_client, /*id*/ 5, "second_client").await?;
+    read_response_for_id(&mut second_client, /*id*/ 5).await?;
+
+    send_request(
+        &mut second_client,
+        "thread/serverRequest/list",
+        /*id*/ 6,
+        Some(json!({ "threadId": thread.id.clone() })),
+    )
+    .await?;
+    let list_response = read_response_for_id(&mut second_client, /*id*/ 6).await?;
+    let pending: ThreadServerRequestListResponse = to_response(list_response)?;
+    assert_eq!(pending.requests, vec![original_request.clone()]);
+
+    send_request(
+        &mut second_client,
+        "thread/resume",
+        /*id*/ 7,
+        Some(serde_json::to_value(ThreadResumeParams {
+            thread_id: thread.id.clone(),
+            ..Default::default()
+        })?),
+    )
+    .await?;
+    let (resume_response, replayed_request) =
+        read_response_and_server_request(&mut second_client, /*id*/ 7).await?;
+    let _: ThreadResumeResponse = to_response(resume_response)?;
+    assert_eq!(replayed_request, original_request);
+
+    let ServerRequest::CommandExecutionRequestApproval { request_id, .. } = replayed_request else {
+        unreachable!("request variant checked above");
+    };
+    let approval_response = serde_json::to_value(CommandExecutionRequestApprovalResponse {
+        decision: CommandExecutionApprovalDecision::Accept,
+    })?;
+    send_request(
+        &mut second_client,
+        "thread/serverRequest/respond",
+        /*id*/ 8,
+        Some(json!({
+            "threadId": thread.id.clone(),
+            "requestId": request_id,
+            "response": approval_response,
+        })),
+    )
+    .await?;
+    let (_, completed) =
+        read_response_and_command_execution_completed(&mut second_client, /*id*/ 8).await?;
+    let ThreadItem::CommandExecution {
+        aggregated_output, ..
+    } = completed.item
+    else {
+        unreachable!("helper returns command execution item");
+    };
+    let output = aggregated_output.context("command should produce aggregated output")?;
+    assert!(
+        output.contains("42"),
+        "expected approved command output to contain 42, got {output:?}"
+    );
 
     process
         .kill()
@@ -815,6 +988,78 @@ pub(super) async fn send_jsonrpc(stream: &mut WsClient, message: JSONRPCMessage)
         .send(WebSocketMessage::Text(payload.into()))
         .await
         .context("failed to send websocket frame")
+}
+
+async fn read_response_and_server_request(
+    stream: &mut WsClient,
+    id: i64,
+) -> Result<(JSONRPCResponse, ServerRequest)> {
+    let target_id = RequestId::Integer(id);
+    let mut response = None;
+    let mut server_request = None;
+
+    while response.is_none() || server_request.is_none() {
+        let message = read_jsonrpc_message(stream).await?;
+        match message {
+            JSONRPCMessage::Response(candidate) if candidate.id == target_id => {
+                response = Some(candidate);
+            }
+            JSONRPCMessage::Error(candidate) if candidate.id == target_id => {
+                bail!(
+                    "expected successful response, got error: {:?}",
+                    candidate.error
+                );
+            }
+            JSONRPCMessage::Request(request) => {
+                server_request = Some(
+                    request
+                        .try_into()
+                        .context("failed to deserialize server request")?,
+                );
+            }
+            _ => {}
+        }
+    }
+
+    Ok((
+        response.context("missing expected response")?,
+        server_request.context("missing expected server request")?,
+    ))
+}
+
+async fn read_response_and_command_execution_completed(
+    stream: &mut WsClient,
+    id: i64,
+) -> Result<(JSONRPCResponse, ItemCompletedNotification)> {
+    let target_id = RequestId::Integer(id);
+    let mut response = None;
+    let mut completed = None;
+
+    while response.is_none() || completed.is_none() {
+        match read_jsonrpc_message(stream).await? {
+            JSONRPCMessage::Response(candidate) if candidate.id == target_id => {
+                response = Some(candidate);
+            }
+            JSONRPCMessage::Notification(notification)
+                if notification.method == "item/completed" =>
+            {
+                let candidate: ItemCompletedNotification = serde_json::from_value(
+                    notification
+                        .params
+                        .context("item/completed should include params")?,
+                )?;
+                if matches!(candidate.item, ThreadItem::CommandExecution { .. }) {
+                    completed = Some(candidate);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    Ok((
+        response.context("missing expected response")?,
+        completed.context("missing command execution completion")?,
+    ))
 }
 
 pub(super) async fn read_response_for_id(

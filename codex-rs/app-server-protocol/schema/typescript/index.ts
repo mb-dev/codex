@@ -44,6 +44,7 @@ export type { InitializeResponse } from "./InitializeResponse";
 export type { InputModality } from "./InputModality";
 export type { InternalChatMessageMetadataPassthrough } from "./InternalChatMessageMetadataPassthrough";
 export type { InternalSessionSource } from "./InternalSessionSource";
+export type { JSONRPCErrorError } from "./JSONRPCErrorError";
 export type { LegacyAppPathString } from "./LegacyAppPathString";
 export type { LocalShellAction } from "./LocalShellAction";
 export type { LocalShellExecAction } from "./LocalShellExecAction";
