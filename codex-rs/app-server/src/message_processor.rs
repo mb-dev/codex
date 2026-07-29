@@ -1081,6 +1081,21 @@ impl MessageProcessor {
                     .thread_unsubscribe(&request_id, params)
                     .await
             }
+            ClientRequest::ThreadServerRequestList { params, .. } => {
+                self.thread_processor
+                    .thread_server_request_list(params)
+                    .await
+            }
+            ClientRequest::ThreadServerRequestRespond { params, .. } => {
+                self.thread_processor
+                    .thread_server_request_respond(params)
+                    .await
+            }
+            ClientRequest::ThreadServerRequestReject { params, .. } => {
+                self.thread_processor
+                    .thread_server_request_reject(params)
+                    .await
+            }
             ClientRequest::ThreadResume { params, .. } => {
                 self.thread_processor
                     .thread_resume(
