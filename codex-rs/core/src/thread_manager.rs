@@ -73,6 +73,7 @@ use codex_thread_store::LoadThreadHistoryParams;
 use codex_thread_store::LocalThreadStore;
 use codex_thread_store::LocalThreadStoreConfig;
 use codex_thread_store::MoveThreadToSectionParams;
+use codex_thread_store::PersistContext;
 use codex_thread_store::PreparedFork;
 use codex_thread_store::ReadThreadByRolloutPathParams;
 use codex_thread_store::ReadThreadParams;
@@ -2109,7 +2110,9 @@ impl ThreadManagerState {
             session.services.mcp_runtime.enable_full_access_form_input();
         }
         if let Some(thread_id) = requested_thread_id
-            && let Err(err) = session.try_ensure_rollout_materialized().await
+            && let Err(err) = session
+                .try_ensure_rollout_materialized(PersistContext::Standard)
+                .await
         {
             if let Err(shutdown_err) = io.shutdown_and_wait().await {
                 warn!("failed to shut down thread {thread_id} after rollout error: {shutdown_err}");
