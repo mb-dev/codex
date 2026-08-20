@@ -433,10 +433,13 @@ fn find_spawn_agent_model_name(
     requested_model: &str,
     multi_agent_version: MultiAgentVersion,
 ) -> Result<String, FunctionCallError> {
+    let canonical_requested_model = requested_model
+        .strip_prefix("openai-")
+        .unwrap_or(requested_model);
     available_models
         .iter()
         .find(|model| {
-            model.model == requested_model
+            model.model == canonical_requested_model
                 && model_supports_multi_agent_backend(model, multi_agent_version)
         })
         .map(|model| model.model.clone())
