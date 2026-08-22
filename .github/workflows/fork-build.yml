@@ -228,7 +228,7 @@ jobs:
         run: |
           set -euo pipefail
           target="${{ matrix.target }}"
-          binaries=(codex)
+          binaries=(codex codex-code-mode-host)
 
           build_args=()
           for binary in "${binaries[@]}"; do
@@ -277,6 +277,7 @@ jobs:
         shell: bash
         env:
           TARGET: ${{ matrix.target }}
+          CODEX_REPO_ROOT: ${{ github.workspace }}
         run: |
           set -euo pipefail
           bash "${GITHUB_WORKSPACE}/.github/scripts/build-codex-package-archive.sh" \

@@ -725,15 +725,33 @@ impl Session {
         let initial_multi_agent_version = multi_agent_version.get().copied();
 
         let thread_id = match (&initial_history, reserved_thread_id, requested_thread_id) {
-            (InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_), Some(thread_id), Some(requested_thread_id)) if thread_id != requested_thread_id => {
+            (
+                InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_),
+                Some(thread_id),
+                Some(requested_thread_id),
+            ) if thread_id != requested_thread_id => {
                 return Err(anyhow::anyhow!(
                     "reserved thread ID does not match requested thread ID"
                 ));
             }
-            (InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_), Some(thread_id), _) => thread_id,
-            (InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_), None, Some(thread_id)) => thread_id,
-            (InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_), None, None) => agent_control.generate_thread_id(),
-            (InitialHistory::Resumed(resumed_history), None, None) => resumed_history.conversation_id,
+            (
+                InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_),
+                Some(thread_id),
+                _,
+            ) => thread_id,
+            (
+                InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_),
+                None,
+                Some(thread_id),
+            ) => thread_id,
+            (
+                InitialHistory::New | InitialHistory::Cleared | InitialHistory::Forked(_),
+                None,
+                None,
+            ) => agent_control.generate_thread_id(),
+            (InitialHistory::Resumed(resumed_history), None, None) => {
+                resumed_history.conversation_id
+            }
             (InitialHistory::Resumed(_), Some(_), _) => {
                 return Err(anyhow::anyhow!(
                     "reserved thread ID cannot be used when resuming a thread"

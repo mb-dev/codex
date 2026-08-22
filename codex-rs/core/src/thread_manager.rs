@@ -1903,6 +1903,7 @@ impl ThreadManagerState {
             thread_extension_init,
             client_mcp_extensions,
             user_shell_override,
+            reserved_thread_id,
         ))
         .await
     }
@@ -1953,6 +1954,7 @@ impl ThreadManagerState {
             thread_extension_init,
             client_mcp_extensions,
             user_shell_override,
+            /*reserved_thread_id*/ None,
         )
         .await
     }
@@ -1981,6 +1983,7 @@ impl ThreadManagerState {
         thread_extension_init: ExtensionDataInit,
         client_mcp_extensions: ClientMcpExtensions,
         user_shell_override: Option<crate::shell::Shell>,
+        reserved_thread_id: Option<ThreadId>,
     ) -> CodexResult<NewThread> {
         let is_resumed_thread = matches!(&initial_history, InitialHistory::Resumed(_));
         if reserved_thread_id.is_some() && matches!(&initial_history, InitialHistory::Resumed(_)) {
